@@ -1,0 +1,2 @@
+# Local CMake / vcpkg manifest build (keep HyperLiDAR root clean; build under submodule)
+/build/
