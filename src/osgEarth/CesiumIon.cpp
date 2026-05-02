@@ -10,6 +10,7 @@
 #include <osgEarth/Bing>
 #include <osgEarth/Notify>
 #include <osgEarth/Locators>
+#include <osgEarth/GeoData>
 
 #include <osgUtil/SmoothingVisitor>
 
@@ -578,6 +579,133 @@ namespace
 
         return mesh;
     }
+
+    static URI makeCesiumTerrainTileUri(const TileKey& key, const URI& assetBase)
+    {
+        unsigned tx, ty;
+        key.getTileXY(tx, ty);
+        unsigned int numRows = 0, numCols = 0;
+        key.getProfile()->getNumTiles(key.getLevelOfDetail(), numCols, numRows);
+        ty = numRows - ty - 1u;
+        return URI(
+            Stringify() << assetBase.full() << key.getLevelOfDetail() << "/" << tx << "/" << ty << ".terrain",
+            assetBase.context());
+    }
+
+    static TileMesh tryReadCesiumQuantizedMeshForKey(
+        const TileKey& key,
+        const URI& assetBase,
+        const osgDB::Options* readOptions,
+        ProgressCallback* progress)
+    {
+        const URI tileURI = makeCesiumTerrainTileUri(key, assetBase);
+        for (unsigned int attempt = 0; attempt < 4u; ++attempt)
+        {
+            const ReadResult result = tileURI.readString(readOptions, progress);
+            if (result.succeeded())
+            {
+                std::stringstream buf(result.getString());
+                return quantizedMeshToTileMesh(key, buf);
+            }
+        }
+        return TileMesh();
+    }
+
+    /// When a child .terrain is missing, reuse a loaded parent quantized mesh clipped to the child
+    /// extent so elevation does not collapse to the ellipsoid grid fallback (GeometryPool).
+    static TileMesh clipParentTerrainMeshToChildTile(const TileKey& childKey, const TileMesh& parentMesh)
+    {
+        TileMesh out;
+        if (!parentMesh.verts.valid() || !parentMesh.indices.valid() || !parentMesh.uvs.valid())
+            return out;
+
+        const GeoExtent childEx = childKey.getExtent();
+        if (!childEx.isValid())
+            return out;
+
+        const SpatialReference* horiz = childEx.getSRS();
+        if (!horiz)
+            return out;
+
+        GeoLocator childLocator(childEx);
+        const GeoPoint childCentroid = childEx.getCentroid();
+        osg::Matrixd childW2L, childL2W;
+        childCentroid.createWorldToLocal(childW2L);
+        childL2W.invert(childW2L);
+
+        osg::ref_ptr<osg::Vec3Array> verts = new osg::Vec3Array(osg::Array::BIND_PER_VERTEX);
+        osg::ref_ptr<osg::Vec3Array> uvs = new osg::Vec3Array(osg::Array::BIND_PER_VERTEX);
+        osg::ref_ptr<osg::DrawElementsUInt> de = new osg::DrawElementsUInt(GL_TRIANGLES);
+
+        auto parentVertToWorld = [&](unsigned vi) -> osg::Vec3d {
+            const osg::Vec3& pl = (*parentMesh.verts)[vi];
+            return osg::Vec3d(pl.x(), pl.y(), pl.z()) * parentMesh.localToWorld;
+        };
+
+        for (unsigned t = 0; t < parentMesh.indices->getNumIndices(); t += 3u)
+        {
+            const unsigned i0 = parentMesh.indices->getElement(t);
+            const unsigned i1 = parentMesh.indices->getElement(t + 1u);
+            const unsigned i2 = parentMesh.indices->getElement(t + 2u);
+
+            const osg::Vec3d w0 = parentVertToWorld(i0);
+            const osg::Vec3d w1 = parentVertToWorld(i1);
+            const osg::Vec3d w2 = parentVertToWorld(i2);
+            const osg::Vec3d wc = (w0 + w1 + w2) * (1.0 / 3.0);
+
+            osg::Vec3d lla;
+            if (!horiz->transformFromWorld(wc, lla))
+                continue;
+            if (!childEx.contains(lla.x(), lla.y(), horiz))
+                continue;
+
+            const auto emitVert = [&](unsigned pi) -> void {
+                const osg::Vec3d world = parentVertToWorld(pi);
+                const osg::Vec3d cl = world * childW2L;
+                osg::Vec3d unit;
+                childLocator.worldToUnit(world, unit);
+                verts->push_back(osg::Vec3((float)cl.x(), (float)cl.y(), (float)cl.z()));
+                const int marker = (int)(*parentMesh.uvs)[pi].z();
+                uvs->push_back(osg::Vec3((float)unit.x(), (float)unit.y(), (float)marker));
+            };
+
+            const unsigned base = verts->size();
+            emitVert(i0);
+            emitVert(i1);
+            emitVert(i2);
+            de->addElement(base);
+            de->addElement(base + 1u);
+            de->addElement(base + 2u);
+        }
+
+        if (verts->empty() || de->getNumIndices() < 3u)
+            return out;
+
+        osg::ref_ptr<osg::VertexBufferObject> vbo = new osg::VertexBufferObject();
+        verts->setVertexBufferObject(vbo.get());
+        uvs->setVertexBufferObject(vbo.get());
+
+        osg::ref_ptr<osg::Vec3Array> normals;
+        {
+            osg::ref_ptr<osg::Geode> geode = new osg::Geode;
+            osg::ref_ptr<osg::Geometry> geometry = new osg::Geometry;
+            geometry->setVertexArray(verts.get());
+            geometry->addPrimitiveSet(de.get());
+            geode->addDrawable(geometry.get());
+            osgUtil::SmoothingVisitor sv;
+            geode->accept(sv);
+            normals = static_cast<osg::Vec3Array*>(geometry->getNormalArray());
+            if (normals.valid())
+                normals->setVertexBufferObject(vbo.get());
+        }
+
+        out.verts = verts.get();
+        out.uvs = uvs.get();
+        out.normals = normals.get();
+        out.indices = de.get();
+        out.localToWorld = childL2W;
+        return out;
+    }
 }
 ///////
 
@@ -586,32 +714,28 @@ TileMesh CesiumIonTerrainMeshLayer::createTileImplementation(
     const TileKey& key,
     ProgressCallback* progress) const
 {
-    unsigned x, y;
-    key.getTileXY(x, y);
-    unsigned int numRows, numCols;
-    key.getProfile()->getNumTiles(key.getLevelOfDetail(), numCols, numRows);
-    y = numRows - y - 1;
-
-    URI tileURI(Stringify() << _assetURI.full() << key.getLevelOfDetail() << "/" << x << "/" << y << ".terrain", _assetURI.context());
-
-    osgEarth::ReadResult result;
-    for (unsigned int i = 0; i < 4; ++i)
+    TileMesh mesh = tryReadCesiumQuantizedMeshForKey(key, _assetURI, getReadOptions(), progress);
+    if (mesh.verts.valid())
     {
-        result = tileURI.readString(getReadOptions(), progress);
-        if (result.succeeded())
+        applyConstraints(key, mesh);
+        return mesh;
+    }
+
+    constexpr unsigned kMaxParentWalk = 16u;
+    TileKey parentKey = key.createParentKey();
+    for (unsigned hop = 0; hop < kMaxParentWalk && parentKey.valid(); ++hop, parentKey = parentKey.createParentKey())
+    {
+        TileMesh parentMesh = tryReadCesiumQuantizedMeshForKey(parentKey, _assetURI, getReadOptions(), progress);
+        if (!parentMesh.verts.valid())
+            continue;
+
+        TileMesh upsampled = clipParentTerrainMeshToChildTile(key, parentMesh);
+        if (upsampled.verts.valid() && upsampled.verts->size() >= 3u)
         {
-            std::string data = result.getString();
-            std::stringstream buf(data);
-            auto mesh = quantizedMeshToTileMesh(key, buf);
-            applyConstraints(key, mesh);
-            return mesh;
-        }
-        else
-        {
-            //OE_NOTICE << "Request for " << tileURI.full() << " failed attempt=" << i << std::endl;
+            applyConstraints(key, upsampled);
+            return upsampled;
         }
     }
 
-    TileMesh invalid;
-    return invalid;
+    return TileMesh();
 }

@@ -5,6 +5,7 @@
   "description": "osgEarth - 3D Maps and Terrain - Copyright 2026 Pelican Mapping",
   "homepage": "https://github.com/gwaldron/osgearth",
   "supports": "!(x86 | wasm32)",
+  "builtin-baseline": "e5a1490e1409d175932ef6014519e9ae149ddb7c",
   "dependencies": [
     "benchmark",
     "blend2d",

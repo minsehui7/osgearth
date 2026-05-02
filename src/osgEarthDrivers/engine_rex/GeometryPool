@@ -180,7 +180,8 @@ namespace osgEarth
         {
             GeometryKey() :
                 lod(-1),
-                tileY(0),
+                tileX(0u),
+                tileY(0u),
                 patch(false),
                 size(0u)
             {
@@ -189,6 +190,7 @@ namespace osgEarth
 
             GeometryKey(const GeometryKey& rhs) :
                 lod(rhs.lod),
+                tileX(rhs.tileX),
                 tileY(rhs.tileY),
                 patch(rhs.patch),
                 size(rhs.size)
@@ -200,6 +202,8 @@ namespace osgEarth
             {
                 if (lod < rhs.lod) return true;
                 if (lod > rhs.lod) return false;
+                if (tileX < rhs.tileX) return true;
+                if (tileX > rhs.tileX) return false;
                 if (tileY < rhs.tileY) return true;
                 if (tileY > rhs.tileY) return false;
                 if (size < rhs.size) return true;
@@ -212,6 +216,7 @@ namespace osgEarth
             {
                 return
                     lod == rhs.lod &&
+                    tileX == rhs.tileX &&
                     tileY == rhs.tileY &&
                     size == rhs.size &&
                     patch == rhs.patch;
@@ -221,6 +226,7 @@ namespace osgEarth
             {
                 return
                     lod != rhs.lod ||
+                    tileX != rhs.tileX ||
                     tileY != rhs.tileY ||
                     size != rhs.size ||
                     patch != rhs.patch;
@@ -231,13 +237,15 @@ namespace osgEarth
             {
                 return osgEarth::hash_value_unsigned(
                     (unsigned)key.lod,
-                    (unsigned)key.tileY,
+                    key.tileX,
+                    key.tileY,
                     key.size,
                     key.patch ? 1u : 0u);
             }
 
             int      lod;
-            int      tileY;
+            unsigned tileX;
+            unsigned tileY;
             bool     patch;
             unsigned size;
         };
@@ -251,7 +259,8 @@ namespace std
         inline size_t operator()(const osgEarth::REX::GeometryKey& key) const {
             return osgEarth::hash_value_unsigned(
                 (unsigned)key.lod,
-                (unsigned)key.tileY,
+                key.tileX,
+                key.tileY,
                 key.size, key.patch ? 1u : 0u);
         }
     };

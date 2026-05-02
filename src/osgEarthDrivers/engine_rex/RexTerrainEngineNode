@@ -167,6 +167,14 @@ namespace osgEarth { namespace REX
 
         RexTerrainEngineNode( const RexTerrainEngineNode& rhs, const osg::CopyOp& op =osg::CopyOp::DEEP_COPY_ALL ) { }
 
+        //! Apply SelectionInfo visibility ranges to TerrainResources (after init or async commit).
+        void applySelectionInfoVisibilityHints();
+
+        //! If async SelectionInfo build finished, commit on update thread.
+        void tryApplyAsyncSelectionInfo();
+
+        jobs::future<std::vector<SelectionInfo::LOD>> _selectionInfoFuture;
+
         SelectionInfo _selectionInfo;
 
         osg::ref_ptr<osg::StateSet> _surfaceSS;

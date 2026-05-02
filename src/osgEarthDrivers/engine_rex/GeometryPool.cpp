@@ -139,8 +139,11 @@ GeometryPool::createKeyForTileKey(const TileKey& tileKey,
                                   unsigned tileSize,
                                   GeometryKey& out) const
 {
-    out.lod  = tileKey.getLOD();
-    out.tileY = tileKey.getProfile()->getSRS()->isGeographic()? tileKey.getTileY() : 0;
+    // Both X and Y are required. Omitting tileX made all same-row geographic tiles
+    // share one pooled mesh (wrong geometry / apparent "flat" tiles on fallback path).
+    out.lod = (int)tileKey.getLOD();
+    out.tileX = tileKey.getTileX();
+    out.tileY = tileKey.getTileY();
     out.size = tileSize;
 }
 

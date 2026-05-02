@@ -57,6 +57,10 @@ namespace osgEarth
         OE_OPTION(bool, visible, true);
         OE_OPTION(bool, createTilesAsync, true);
         OE_OPTION(bool, createTilesGrouped, true);
+        //! Rex: compute SelectionInfo LOD table on a worker; placeholder ranges until commit.
+        OE_OPTION(bool, asyncSelectionInfoBuild, false);
+        //! Rex: when false, skip blocking join after dispatching root tile loads (faster open).
+        OE_OPTION(bool, blockingRootTileLoads, true);
         OE_OPTION(bool, restrictPolarSubdivision, true);
         OE_OPTION(bool, gpuPaging, false);
         OE_OPTION(float, tessellationResolution, 5000.0f);
@@ -260,6 +264,12 @@ namespace osgEarth
         //! Whether the engine should create all child tiles in a group
         void setCreateTilesGrouped(const bool& value);
         const bool& getCreateTilesGrouped() const;
+
+        void setAsyncSelectionInfoBuild(const bool& value);
+        const bool& getAsyncSelectionInfoBuild() const;
+
+        void setBlockingRootTileLoads(const bool& value);
+        const bool& getBlockingRootTileLoads() const;
 
         //! Whether to stop a geocentric mesh from subdividing all the way at the poles.
         void setRestrictPolarSubdivision(const bool& value);

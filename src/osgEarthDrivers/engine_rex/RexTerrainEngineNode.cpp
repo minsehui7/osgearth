@@ -154,6 +154,7 @@ RexTerrainEngineNode::RexTerrainEngineNode() :
 
 RexTerrainEngineNode::~RexTerrainEngineNode()
 {
+    _selectionInfoFuture.abandon();
     if (_ppUID > 0)
         Registry::instance()->getShaderFactory()->removePreProcessorCallback(_ppUID);
 }
@@ -206,6 +207,7 @@ RexTerrainEngineNode::releaseGLObjects(osg::State* state) const
 void
 RexTerrainEngineNode::shutdown()
 {
+    _selectionInfoFuture.abandon();
     TerrainEngineNode::shutdown();
     _merger->clear();
 }
@@ -324,16 +326,55 @@ RexTerrainEngineNode::onSetMap()
     // Calculate the LOD morphing parameters:
     unsigned maxLOD = options.getMaxLOD();
 
-    _selectionInfo.initialize(
-        0u, // always zero, not the terrain options firstLOD
-        maxLOD,
-        _map->getProfile(),
-        options.getMinTileRangeFactor(),
-        options.getRestrictPolarSubdivision());
+    const bool asyncSelectionInfo = options.getAsyncSelectionInfoBuild() == true;
 
-    TerrainResources* res = getResources();
-    for (unsigned lod = 0; lod <= maxLOD; ++lod)
-        res->setVisibilityRangeHint(lod, _selectionInfo.getLOD(lod)._visibilityRange);
+    if (asyncSelectionInfo)
+    {
+        _selectionInfo.initializePlaceholder(
+            0u, // always zero, not the terrain options firstLOD
+            maxLOD,
+            _map->getProfile(),
+            options.getMinTileRangeFactor(),
+            options.getRestrictPolarSubdivision());
+    }
+    else
+    {
+        _selectionInfo.initialize(
+            0u,
+            maxLOD,
+            _map->getProfile(),
+            options.getMinTileRangeFactor(),
+            options.getRestrictPolarSubdivision());
+    }
+
+    applySelectionInfoVisibilityHints();
+
+    if (asyncSelectionInfo)
+    {
+        _selectionInfoFuture.abandon();
+
+        osg::ref_ptr<const Profile> profileRef = _map->getProfile();
+        const double mtrf = options.getMinTileRangeFactor();
+        const bool restrictPolar = options.getRestrictPolarSubdivision();
+
+        jobs::context cx;
+        cx.name = "oe.rex.selectioninfo";
+        cx.pool = jobs::get_pool(ARENA_LOAD_TILE);
+        cx.can_cancel = true;
+
+        _selectionInfoFuture = jobs::dispatch(
+            [profileRef, maxLOD, mtrf, restrictPolar](Cancelable&) -> std::vector<SelectionInfo::LOD> {
+                std::vector<SelectionInfo::LOD> lods;
+                auto mapMTRF = [](double m, double r) { return m; };
+                if (!SelectionInfo::computeLODTable(0u, maxLOD, profileRef.get(), mtrf, restrictPolar, mapMTRF, lods))
+                {
+                    OE_WARN << LC << "Async SelectionInfo computeLODTable failed; keeping placeholder ranges." << std::endl;
+                    lods.clear();
+                }
+                return lods;
+            },
+            cx);
+    }
 
     // set up the initial graph
     refresh();
@@ -558,8 +599,11 @@ RexTerrainEngineNode::refresh(bool forceDirty)
             jobs::dispatch([tileNode]() { tileNode->loadSync(); }, context);
         }
 
-        // wait for all loadSync calls to complete
-        context.group->join();
+        // wait for all loadSync calls to complete (optional; skipping reduces open stalls)
+        if (getOptions().getBlockingRootTileLoads())
+        {
+            context.group->join();
+        }
 
         // release the self-ref.
         this->unref_nodelete();
@@ -912,9 +956,49 @@ RexTerrainEngineNode::cull_traverse(osg::NodeVisitor& nv)
 }
 
 void
+RexTerrainEngineNode::applySelectionInfoVisibilityHints()
+{
+    TerrainResources* res = getResources();
+    if (!res)
+        return;
+
+    const unsigned maxLOD = getOptions().getMaxLOD();
+    for (unsigned lod = 0; lod <= maxLOD; ++lod)
+        res->setVisibilityRangeHint(lod, _selectionInfo.getLOD(lod)._visibilityRange);
+}
+
+void
+RexTerrainEngineNode::tryApplyAsyncSelectionInfo()
+{
+    if (!_selectionInfoFuture.available())
+        return;
+
+    std::vector<SelectionInfo::LOD> lods = _selectionInfoFuture.release();
+
+    if (lods.empty())
+        return;
+
+    auto api = getOptions();
+    osg::ref_ptr<const Profile> prof = _map->getProfile();
+
+    _selectionInfo.commitLODTable(
+        0u,
+        api.getMaxLOD(),
+        prof,
+        api.getMinTileRangeFactor(),
+        api.getRestrictPolarSubdivision(),
+        std::move(lods));
+
+    applySelectionInfoVisibilityHints();
+    dirtyBound();
+}
+
+void
 RexTerrainEngineNode::update_traverse(osg::NodeVisitor& nv)
 {
     OE_PROFILING_ZONE;
+
+    tryApplyAsyncSelectionInfo();
 
     if (_renderModelUpdateRequired)
     {

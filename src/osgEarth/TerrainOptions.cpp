@@ -60,6 +60,8 @@ TerrainOptions::getConfig() const
     conf.set("visible", visible());
     conf.set("create_tiles_async", createTilesAsync());
     conf.set("create_tiles_grouped", createTilesGrouped());
+    conf.set("async_selection_info_build", asyncSelectionInfoBuild());
+    conf.set("blocking_root_tile_loads", blockingRootTileLoads());
     conf.set("restrict_polar_subdivision", restrictPolarSubdivision());
     conf.set("gpu_paging", gpuPaging());
     conf.set("tessellation", gpuTessellation());
@@ -120,6 +122,8 @@ TerrainOptions::fromConfig(const Config& conf)
     conf.get("visible", visible());
     conf.get("create_tiles_async", createTilesAsync());
     conf.get("create_tiles_grouped", createTilesGrouped());
+    conf.get("async_selection_info_build", asyncSelectionInfoBuild());
+    conf.get("blocking_root_tile_loads", blockingRootTileLoads());
     conf.get("restrict_polar_subdivision", restrictPolarSubdivision());
     conf.get("gpu_paging", gpuPaging());
     conf.get("tessellation", gpuTessellation());
@@ -211,6 +215,8 @@ OE_OPTION_IMPL(TerrainOptionsAPI, unsigned, MaxTextureSize, maxTextureSize);
 OE_OPTION_IMPL(TerrainOptionsAPI, bool, Visible, visible);
 OE_OPTION_IMPL(TerrainOptionsAPI, bool, CreateTilesAsync, createTilesAsync);
 OE_OPTION_IMPL(TerrainOptionsAPI, bool, CreateTilesGrouped, createTilesGrouped);
+OE_OPTION_IMPL(TerrainOptionsAPI, bool, AsyncSelectionInfoBuild, asyncSelectionInfoBuild);
+OE_OPTION_IMPL(TerrainOptionsAPI, bool, BlockingRootTileLoads, blockingRootTileLoads);
 OE_OPTION_IMPL(TerrainOptionsAPI, bool, RestrictPolarSubdivision, restrictPolarSubdivision);
 OE_OPTION_IMPL(TerrainOptionsAPI, bool, GPUPaging, gpuPaging);
 OE_OPTION_IMPL(TerrainOptionsAPI, float, TessellationResolution, tessellationResolution);

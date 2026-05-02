@@ -9,6 +9,8 @@
 #include <osg/NodeVisitor>
 #include <osgEarth/Profile>
 #include <osgEarth/TileKey>
+#include <functional>
+#include <shared_mutex>
 #include <vector>
 
 
@@ -18,6 +20,9 @@ namespace osgEarth { namespace REX
      * SelectionInfo is a data structure that holds the LOD distance switching 
      * information for the terrain, to support paging and LOD morphing. 
      * This is calculated once when the terrain is first created.
+     *
+     * Reads use a shared lock; writers (initialize, commitLODTable, async completion)
+     * use an exclusive lock so worker-thread LOD computation can overlap render reads.
      */
     class SelectionInfo
     {
@@ -33,14 +38,28 @@ namespace osgEarth { namespace REX
     public:
         SelectionInfo() : _firstLOD(0) { }
 
-        //! Initialize the selection into LODs
+        //! Thread-safe: compute LOD distance table (same semantics as initialize).
+        //! Callable from a worker thread; writes only to \p out_lods.
+        static bool computeLODTable(unsigned firstLod, unsigned maxLod, const Profile* profile,
+            double mtrf, bool restrictPolarSubdivision,
+            const std::function<double(double, double)>& mapMTRF,
+            std::vector<LOD>& out_lods);
+
+        //! Initialize the selection into LODs (synchronous, uses member _mapMTRF for mapping).
         void initialize(unsigned firstLod, unsigned maxLod, const Profile* profile, double mtrf, bool restrictPolarSubdivision);
+
+        //! Fast placeholder (skips polar TY refinement). Used while async full table builds.
+        void initializePlaceholder(unsigned firstLod, unsigned maxLod, const Profile* profile, double mtrf, bool restrictPolarSubdivision);
+
+        //! Main/update thread: install a precomputed LOD table from computeLODTable.
+        void commitLODTable(unsigned firstLod, unsigned maxLod, osg::ref_ptr<const Profile> profile,
+            double mtrf, bool restrictPolarSubdivision, std::vector<LOD>&& lods);
 
         //! Set a new MRTF and re-initialize
         void setMTRFMappingFunction(std::function<double(double mtrf, double range)> func);
 
         //! Number of LODs
-        unsigned getNumLODs(void) const { return _lods.size(); }
+        unsigned getNumLODs(void) const;
 
         //! Visibility and morphing information for a specific LOD
         const LOD& getLOD(unsigned lod) const;
@@ -49,23 +68,20 @@ namespace osgEarth { namespace REX
         void get(const TileKey& key, float& out_range, float& out_startMorphRange, float& out_endMorphRange) const;
 
         //! Get just the visibility range for a TileKey.
-        //! inlined for speed (SL measured)
-        inline float getRange(const TileKey& key) const {
-            const LOD& lod = _lods[key.getLOD()];
-            if (key.getTileY() >= lod._minValidTY && key.getTileY() <= lod._maxValidTY)
-            {
-                return lod._visibilityRange;
-            }
-            return 0.0f;
-        }
+        float getRange(const TileKey& key) const;
 
     private:
+        void commitUnlocked(unsigned firstLod, unsigned maxLod, osg::ref_ptr<const Profile> profile,
+            double mtrf, bool restrictPolarSubdivision, std::vector<LOD>&& lods);
+
         std::vector<LOD> _lods;
         unsigned _firstLOD, _maxLOD;
         osg::ref_ptr<const Profile> _profile;
         double _mrtf = 7.0;
         bool _restrictPolarSubdivision = false;
         std::function<double(double, double)> _mapMTRF = [](double mtrf, double range) { return mtrf; };
+
+        mutable std::shared_mutex _mutex;
 
         static const double _morphStartRatio;
     };
