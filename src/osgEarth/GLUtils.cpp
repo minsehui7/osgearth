@@ -503,6 +503,16 @@ GL3RealizeOperation::operator()(osg::Object* object)
     }
 
     CustomRealizeOperation::operator()(object);
+
+    // setUseVertexAttributeAliasing only calls VertexArrayState::assignAllDispatchers() when
+    // _globalVertexArrayState already exists. Extension init in CustomRealizeOperation (or later)
+    // may create it after the first setUseVertexAttributeAliasing(true) above — leaving
+    // _vertexAttribArrays[i] null and faulting in VertexArrayState::setArray. Re-apply once here.
+    if (gc) {
+        if (osg::State *state = gc->getState()) {
+            state->setUseVertexAttributeAliasing(state->getUseVertexAttributeAliasing());
+        }
+    }
 }
 
 
