@@ -231,7 +231,12 @@ ClampingTechnique::setUpCamera(OverlayDecorator::TechRTTParams& params)
         new osg::Depth( osg::Depth::LEQUAL, 0.0, 1.0, true ),
         osg::StateAttribute::ON );
 
-    local->_groupStateSet->setRenderingHint( osg::StateSet::TRANSPARENT_BIN );
+    // Render clamped geometry at a high bin number so it draws after all opaque and
+    // point-cloud geometry. In HyperLiDAR the point cloud uses bin 100002; bin 200000
+    // here ensures ClampableNode content (water, admin boundaries) is always on top.
+    // Per-geometry GL_DEPTH_TEST OFF (set by applyAlwaysOnTop) takes effect because
+    // the geometry StateSet is innermost and neither uses OVERRIDE.
+    local->_groupStateSet->setRenderBinDetails( 200000, "DepthSortedBin" );
 
     // set a define so the shaders know we are running GPU clamping.
     local->_groupStateSet->setDefine("OE_GPU_CLAMPING");
