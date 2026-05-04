@@ -182,6 +182,7 @@ SET(TARGET_H
     ECEF
     Elevation
     ElevationLayer
+    QuantizedMeshElevationLayer
     ElevationLOD
     ElevationPool
     ElevationQuery
@@ -404,6 +405,7 @@ SET(TARGET_H
     TerrainEngineRequirements
     TerrainLayer
     TerrainMeshLayer
+    PriorityTerrainMeshLayer
     TerrainOptions
     TerrainProfile
     TerrainResources
@@ -549,6 +551,7 @@ set(TARGET_SRC
     ECEF.cpp
     Elevation.cpp
     ElevationLayer.cpp
+    QuantizedMeshElevationLayer.cpp
     ElevationLOD.cpp
     ElevationPool.cpp
     ElevationQuery.cpp
@@ -742,6 +745,7 @@ set(TARGET_SRC
     TerrainConstraintLayer.cpp
     TerrainEngineNode.cpp
     TerrainMeshLayer.cpp
+    PriorityTerrainMeshLayer.cpp
     TerrainOptions.cpp
     TerrainProfile.cpp
     TerrainResources.cpp

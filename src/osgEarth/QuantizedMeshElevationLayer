@@ -1,0 +1,65 @@
+/* osgEarth
+ * Copyright 2025 Pelican Mapping
+ * MIT License
+ */
+#pragma once
+
+#include <osgEarth/ElevationLayer>
+#include <osgEarth/TerrainMeshLayer>
+
+namespace osgEarth
+{
+    /**
+     * ElevationLayer adapter that exposes a TerrainMeshLayer (e.g. PriorityTerrainMeshLayer)
+     * as an ElevationLayer so that ElevationPool / AltitudeFilter CPU clamping paths
+     * can sample elevation from the same terrain used for GPU rendering.
+     *
+     * Usage:
+     *   auto* elevAdapt = new QuantizedMeshElevationLayer();
+     *   elevAdapt->setSource(priorityTerrainMeshLayer);
+     *   map->addLayer(elevAdapt);   // ElevationPool picks it up automatically
+     *
+     * Note: createHeightFieldImplementation uses a nearest-vertex sample from the
+     * TileMesh ECEF verts. A barycentric / bilinear interpolation upgrade can be
+     * applied later without changing the public API.
+     */
+    class OSGEARTH_EXPORT QuantizedMeshElevationLayer : public ElevationLayer
+    {
+    public: // serialization
+        class OSGEARTH_EXPORT Options : public ElevationLayer::Options
+        {
+        public:
+            META_LayerOptions(osgEarth, Options, ElevationLayer::Options);
+            virtual Config getConfig() const;
+        private:
+            void fromConfig(const Config& conf);
+        };
+
+    public:
+        META_Layer(osgEarth, QuantizedMeshElevationLayer, Options,
+                   ElevationLayer, QuantizedMeshElevation);
+
+        //! Set the TerrainMeshLayer to adapt. Must be called before open().
+        void setSource(TerrainMeshLayer* source) { _source = source; }
+        TerrainMeshLayer* getSource() const { return _source.get(); }
+
+    public: // Layer
+
+        Status openImplementation() override;
+        void addedToMap(const Map* map) override;
+        void removedFromMap(const Map* map) override;
+
+    protected:
+
+        GeoHeightField createHeightFieldImplementation(
+            const TileKey& key,
+            ProgressCallback* progress) const override;
+
+        virtual ~QuantizedMeshElevationLayer() = default;
+
+    private:
+        osg::ref_ptr<TerrainMeshLayer>   _source;
+        osg::observer_ptr<const Map>     _map;
+    };
+
+} // namespace osgEarth

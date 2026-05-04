@@ -358,9 +358,17 @@ CesiumIonTerrainMeshLayer::openImplementation()
     else
         _key = options().token().get();
 
+    // Direct URL mode: no token → treat server URL as the quantized-mesh tile base URI.
+    // This supports local servers (e.g. cesium-terrain-server at http://127.0.0.1:8080/).
+    // Tile URL pattern: {server}/{z}/{x}/{y}.terrain
     if (_key.empty())
     {
-        return Status(Status::ConfigurationError, "CesiumIon API key is required");
+        if (!options().server().isSet() || options().server()->empty())
+            return Status(Status::ConfigurationError,
+                          "CesiumIonTerrainMeshLayer requires either a token (Cesium Ion) "
+                          "or a server URL (direct quantized-mesh server, no token)");
+        _assetURI = options().server().get();
+        return Status::NoError;
     }
 
     CesiumIonResource ionResource;

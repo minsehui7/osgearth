@@ -71,6 +71,9 @@ namespace osgEarth
 
         void applyConstraints(const TileKey& key, TileMesh& mesh) const;
 
+        friend class PriorityTerrainMeshLayer;
+        friend class QuantizedMeshElevationLayer;
+
     private:
         osg::observer_ptr<const Map> _map;
         TerrainEngine* _engine = nullptr;

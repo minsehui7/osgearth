@@ -1,0 +1,78 @@
+/* osgEarth
+ * Copyright 2025 Pelican Mapping
+ * MIT License
+ */
+#pragma once
+
+#include <osgEarth/TerrainMeshLayer>
+#include <vector>
+
+namespace osgEarth
+{
+    /**
+     * TerrainMeshLayer that composites N child TerrainMeshLayers with priority ordering.
+     *
+     * Layers are tried in order (index 0 = highest priority). The first layer that
+     * returns a valid TileMesh wins. Layers without coverage for a given tile return
+     * an empty TileMesh and the next layer is tried automatically.
+     *
+     * Usage:
+     *   auto* priority = new PriorityTerrainMeshLayer();
+     *   priority->addLayer(lasTerrain);   // highest priority
+     *   priority->addLayer(alosTerrain);
+     *   priority->addLayer(srtmTerrain);  // global fallback
+     *   map->addLayer(priority);          // single layer for GeometryPool
+     *
+     * Design constraint: GeometryPool (engine_rex) calls
+     *   map->getLayer<TerrainMeshLayer>()
+     * which returns only the first TerrainMeshLayer. Child layers must NOT be added
+     * directly to the map.
+     */
+    class OSGEARTH_EXPORT PriorityTerrainMeshLayer : public TerrainMeshLayer
+    {
+    public: // serialization
+        class OSGEARTH_EXPORT Options : public TerrainMeshLayer::Options
+        {
+        public:
+            META_LayerOptions(osgEarth, Options, TerrainMeshLayer::Options);
+            OE_OPTION_VECTOR(ConfigOptions, layers);
+            virtual Config getConfig() const;
+        private:
+            void fromConfig(const Config& conf);
+        };
+
+    public:
+        META_Layer(osgEarth, PriorityTerrainMeshLayer, Options,
+                   TerrainMeshLayer, PriorityTerrainMesh);
+
+        //! Append a layer at the lowest priority (called before open()).
+        void addLayer(TerrainMeshLayer* layer);
+
+        //! Insert a layer at the given priority index (called before open()).
+        void insertLayer(unsigned index, TerrainMeshLayer* layer);
+
+        //! Returns all child layers in priority order (index 0 = highest).
+        const std::vector<osg::ref_ptr<TerrainMeshLayer>>& getLayers() const { return _layers; }
+
+    public: // Layer
+
+        Status openImplementation() override;
+        Status closeImplementation() override;
+
+        void addedToMap(const Map* map) override;
+        void removedFromMap(const Map* map) override;
+        void prepareForRendering(TerrainEngine* engine) override;
+
+    protected:
+
+        TileMesh createTileImplementation(
+            const TileKey& key,
+            ProgressCallback* progress) const override;
+
+        virtual ~PriorityTerrainMeshLayer() = default;
+
+    private:
+        std::vector<osg::ref_ptr<TerrainMeshLayer>> _layers;
+    };
+
+} // namespace osgEarth
