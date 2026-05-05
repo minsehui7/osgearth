@@ -786,7 +786,7 @@ TerrainTileModelFactory::createImageTexture(
 
     tex->setFilter( osg::Texture::MAG_FILTER, magFilter );
     tex->setFilter( osg::Texture::MIN_FILTER, minFilter );
-    tex->setMaxAnisotropy( 4.0f );
+    tex->setMaxAnisotropy( 16.0f );
 
     // Disable mip mapping if we don't have it
     if (!hasMipMaps)
