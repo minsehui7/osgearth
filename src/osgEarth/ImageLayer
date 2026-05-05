@@ -29,17 +29,17 @@ namespace osgEarth
         //! Empty/invalid texture window
         TextureWindow() : _texture(0L) { }
         //! Construct a texture window
-        TextureWindow(osg::Texture* tex, const osg::Matrix& scalebias) : _texture(tex), _matrix(scalebias) { }
+        TextureWindow(osg::Texture* tex, const osg::Matrixd& scalebias) : _texture(tex), _matrix(scalebias) { }
         //! Texture
         osg::Texture* getTexture() const { return _texture.get(); }
-        //! Scale bias matrix defining subwindow
-        const osg::Matrixf& getMatrix() const { return _matrix; }
+        //! Scale bias matrix defining subwindow (double precision)
+        const osg::Matrixd& getMatrix() const { return _matrix; }
         //! Is it valid?
         bool valid() const { return _texture.valid(); }
 
     protected:
         osg::ref_ptr<osg::Texture> _texture;
-        osg::Matrixf _matrix;
+        osg::Matrixd _matrix;
     };
 
     /**

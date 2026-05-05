@@ -330,7 +330,7 @@ TerrainTileModelFactory::addStandaloneImageLayer(
 {
     //TerrainTileImageLayerModel* layerModel = NULL;
     TileKey keyToUse = key;
-    osg::Matrixf scaleBiasMatrix;
+    osg::Matrixd scaleBiasMatrix; // double precision accumulation
     bool added = false;
     while (keyToUse.valid() && !added)
     {
@@ -340,7 +340,7 @@ TerrainTileModelFactory::addStandaloneImageLayer(
             TileKey parentKey = keyToUse.createParentKey();
             if (parentKey.valid())
             {
-                osg::Matrixf sb;
+                osg::Matrixd sb;
                 keyToUse.getExtent().createScaleBias(parentKey.getExtent(), sb);
                 scaleBiasMatrix.postMult(sb);
             }
@@ -350,7 +350,12 @@ TerrainTileModelFactory::addStandaloneImageLayer(
 
     if (added)
     {
-        model->colorLayers.back().matrix = scaleBiasMatrix;
+        // Combine the parent-walking scale-bias with the TextureWindow's own matrix.
+        // addImageLayer sets colorLayers.back().matrix to the TextureWindow matrix (or identity
+        // for the createImage path). We must post-multiply to get: tile_uv -> window_uv.
+        osg::Matrixd combined = scaleBiasMatrix;
+        combined.postMult(model->colorLayers.back().matrix);
+        model->colorLayers.back().matrix = combined;
     }
 }
 
@@ -509,7 +514,7 @@ TerrainTileModelFactory::addStandaloneElevation(
     }
     if (model->elevation.texture != nullptr)
     {
-        osg::Matrixf scaleBiasMatrix;
+        osg::Matrixd scaleBiasMatrix; // double precision
         key.getExtent().createScaleBias(keyToUse.getExtent(), scaleBiasMatrix);
         model->elevation.matrix = scaleBiasMatrix;
     }
@@ -593,7 +598,7 @@ TerrainTileModelFactory::addStandaloneLandCover(
     ProgressCallback*            progress)
 {
     TileKey keyToUse = key;
-    osg::Matrixf scaleBiasMatrix;
+    osg::Matrixd scaleBiasMatrix; // double precision
     while (keyToUse.valid() && !model->landCover.texture)
     {
         addLandCover(model, map, keyToUse, reqs, manifest, progress);
@@ -602,7 +607,7 @@ TerrainTileModelFactory::addStandaloneLandCover(
             TileKey parentKey = keyToUse.createParentKey();
             if (parentKey.valid())
             {
-                osg::Matrixf sb;
+                osg::Matrixd sb;
                 keyToUse.getExtent().createScaleBias(parentKey.getExtent(), sb);
                 scaleBiasMatrix.postMult(sb);
             }

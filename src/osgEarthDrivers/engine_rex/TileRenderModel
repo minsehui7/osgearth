@@ -95,7 +95,8 @@ namespace osgEarth { namespace REX
 
         // scale and bias matrix for accessing the texture - will be non-identity
         // if the texture is inherited from an ancestor tile
-        osg::Matrixf _matrix;
+        // Stored in double precision; converted to float32 only at GPU upload
+        osg::Matrixd _matrix;
 
         // point to a texture whose image is still being loaded asynchronously
         Texture::Ptr _futureTexture;
@@ -119,7 +120,7 @@ namespace osgEarth { namespace REX
         }
 
         //! Set this sampler's matrix to inherit
-        inline void inheritFrom(const Sampler& rhs, const osg::Matrixf& scaleBias) {
+        inline void inheritFrom(const Sampler& rhs, const osg::Matrixd& scaleBias) {
             _texture = rhs._texture;
             _matrix = rhs._matrix;
             _revision = rhs._revision;

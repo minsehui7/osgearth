@@ -75,10 +75,16 @@ DrawTileCommand::apply(osg::RenderInfo& ri, void* implData) const
                 samplerState._texture = sampler._texture;
             }
 
-            if (samplerState._matrixUL >= 0 && !samplerState._matrix.isSetTo(sampler._matrix))
+            if (samplerState._matrixUL >= 0)
             {
-                ext->glUniformMatrix4fv(samplerState._matrixUL, 1, GL_FALSE, sampler._matrix.ptr());
-                samplerState._matrix = sampler._matrix;
+                // Sampler::_matrix is Matrixd (double precision CPU store);
+                // glUniformMatrix4fv requires float. Convert at the GPU boundary.
+                osg::Matrixf matf(sampler._matrix);
+                if (!samplerState._matrix.isSetTo(matf))
+                {
+                    ext->glUniformMatrix4fv(samplerState._matrixUL, 1, GL_FALSE, matf.ptr());
+                    samplerState._matrix = matf;
+                }
             }
 
             // Need a special uniform for color parents.
@@ -107,10 +113,14 @@ DrawTileCommand::apply(osg::RenderInfo& ri, void* implData) const
                 samplerState._texture = sampler._texture;
             }
 
-            if (samplerState._matrixUL >= 0 && !samplerState._matrix.isSetTo(sampler._matrix))
+            if (samplerState._matrixUL >= 0)
             {
-                ext->glUniformMatrix4fv(samplerState._matrixUL, 1, GL_FALSE, sampler._matrix.ptr());
-                samplerState._matrix = sampler._matrix;
+                osg::Matrixf matf(sampler._matrix);
+                if (!samplerState._matrix.isSetTo(matf))
+                {
+                    ext->glUniformMatrix4fv(samplerState._matrixUL, 1, GL_FALSE, matf.ptr());
+                    samplerState._matrix = matf;
+                }
             }
         }
     }

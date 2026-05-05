@@ -15,7 +15,12 @@ using namespace osgEarth::REX;
 #undef  LC
 #define LC "[LayerDrawable] "
 
-#define COPY_MAT4F(FROM,TO) ::memcpy((TO), (FROM).ptr(), 16*sizeof(float))
+// Convert an osg::Matrixd to a GLfloat[16] array for GPU upload.
+// Using element-wise cast instead of memcpy to handle the double->float conversion.
+#define COPY_MAT4F(FROM, TO) do { \
+    const double* _src = (FROM).ptr(); \
+    for (int _i = 0; _i < 16; ++_i) (TO)[_i] = static_cast<float>(_src[_i]); \
+} while(0)
 
 #ifndef GL_VERTEX_ATTRIB_ARRAY_UNIFIED_NV
 #define GL_VERTEX_ATTRIB_ARRAY_UNIFIED_NV 0x8F1E

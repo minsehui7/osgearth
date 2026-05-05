@@ -29,7 +29,7 @@ namespace osgEarth
         {
             int revision = -1;
             Texture::Ptr texture;
-            osg::Matrixf matrix;
+            osg::Matrixd matrix; // double precision: converted to float32 only at GPU upload
         };
 
         struct ColorLayer : public Tile

@@ -26,12 +26,13 @@ using namespace osgEarth::Util;
 namespace
 {
     // Scale and bias matrices, one for each TileKey quadrant.
-    const osg::Matrixf scaleBias[4] =
+    // Stored as double precision to maintain UV accuracy at deep zoom levels.
+    const osg::Matrixd scaleBias[4] =
     {
-        osg::Matrixf(0.5f,0,0,0, 0,0.5f,0,0, 0,0,1.0f,0, 0.0f,0.5f,0,1.0f),
-        osg::Matrixf(0.5f,0,0,0, 0,0.5f,0,0, 0,0,1.0f,0, 0.5f,0.5f,0,1.0f),
-        osg::Matrixf(0.5f,0,0,0, 0,0.5f,0,0, 0,0,1.0f,0, 0.0f,0.0f,0,1.0f),
-        osg::Matrixf(0.5f,0,0,0, 0,0.5f,0,0, 0,0,1.0f,0, 0.5f,0.0f,0,1.0f)
+        osg::Matrixd(0.5,0,0,0, 0,0.5,0,0, 0,0,1.0,0, 0.0,0.5,0,1.0),
+        osg::Matrixd(0.5,0,0,0, 0,0.5,0,0, 0,0,1.0,0, 0.5,0.5,0,1.0),
+        osg::Matrixd(0.5,0,0,0, 0,0.5,0,0, 0,0,1.0,0, 0.0,0.0,0,1.0),
+        osg::Matrixd(0.5,0,0,0, 0,0.5,0,0, 0,0,1.0,0, 0.5,0.0,0,1.0)
     };
 }
 
@@ -1188,7 +1189,7 @@ TileNode::refreshInheritedData(TileNode* parent, const RenderBindings& bindings)
             {
                 Sampler& mySampler = myPass->sampler(SamplerBinding::COLOR_PARENT);
                 const Sampler& parentColorSampler = parentPass.sampler(SamplerBinding::COLOR);
-                osg::Matrixf newMatrix = parentColorSampler._matrix;
+                osg::Matrixd newMatrix = parentColorSampler._matrix;
                 newMatrix.preMult(scaleBias[quadrant]);
 
                 // Did something change?
