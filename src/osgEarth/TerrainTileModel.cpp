@@ -93,10 +93,10 @@ TerrainTileModel::getTexture(UID layerUID) const
     return nullptr;
 }
 
-const osg::Matrixf&
+const osg::Matrixd&
 TerrainTileModel::getMatrix(UID layerUID) const
 {
-    static osg::Matrixf s_identity;
+    static osg::Matrixd s_identity;
 
     for (auto& colorLayer : colorLayers)
         if (colorLayer.layer && colorLayer.layer->getUID() == layerUID)

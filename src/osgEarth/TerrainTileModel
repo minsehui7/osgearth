@@ -99,7 +99,7 @@ namespace osgEarth
 
         //! Get a texture given a layer ID
         Texture::Ptr getTexture(UID layerUID) const;
-        const osg::Matrixf& getMatrix(UID layerUID) const;
+        const osg::Matrixd& getMatrix(UID layerUID) const;
 
         //! Populates the output object with things that the
         //! ICO can pre-compile.
