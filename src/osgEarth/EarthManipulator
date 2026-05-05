@@ -695,6 +695,9 @@ namespace osgEarth { namespace Util
          */
         void setUpdateCameraNodeVisitor(osg::NodeVisitor* nv);
 
+        // Reset the internal event stack.
+        void flushMouseEventStack();
+
     public: // osgGA::CameraManipulator
 
         virtual const char* className() const { return "EarthManipulator"; }
@@ -759,8 +762,7 @@ namespace osgEarth { namespace Util
         // resets the mouse event stack and pushes the provided event.
         void resetMouse( osgGA::GUIActionAdapter& aa, bool flushEventStack=true);
 
-        // Reset the internal event stack.
-        void flushMouseEventStack();
+
 
         // Add the current mouse osgGA::GUIEvent to internal stack.
         void addMouseEvent(const osgGA::GUIEventAdapter& ea);
