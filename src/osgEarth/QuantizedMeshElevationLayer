@@ -43,6 +43,19 @@ namespace osgEarth
         void setSource(TerrainMeshLayer* source) { _source = source; }
         TerrainMeshLayer* getSource() const { return _source.get(); }
 
+        /**
+         * Set the maximum zoom level at which the source actually has tile data.
+         * Requests for keys above this level will be served by bilinear-upsampling
+         * the best ancestor tile that is within this level — no additional network
+         * requests are issued and the terrain mesh is still subdivided to the
+         * requested LOD, improving UV mapping accuracy.
+         *
+         * Leave at the default (99) to disable upsampling (fall through to the
+         * normal INVALID path when no data exists at the requested key).
+         */
+        void setMaxSourceLevel(unsigned level) { _maxSourceLevel = level; }
+        unsigned getMaxSourceLevel() const { return _maxSourceLevel; }
+
     public: // Layer
 
         Status openImplementation() override;
@@ -60,6 +73,7 @@ namespace osgEarth
     private:
         osg::ref_ptr<TerrainMeshLayer>   _source;
         osg::observer_ptr<const Map>     _map;
+        unsigned                         _maxSourceLevel = 99u;
     };
 
 } // namespace osgEarth

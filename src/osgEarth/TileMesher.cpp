@@ -32,7 +32,7 @@ TileMesh::operator=(const TileMesh& m)
 
 TileMesh::TileMesh(TileMesh&& m)
 {
-    localToWorld = m.localToWorld; m.localToWorld = osg::Matrix::identity();
+    localToWorld = m.localToWorld; m.localToWorld = osg::Matrixd::identity();
     verts = m.verts; m.verts = { };
     normals = m.normals; m.normals = { };
     uvs = m.uvs; m.uvs = { };
@@ -188,7 +188,7 @@ TileMesher::createMeshStandard(const TileKey& key, Cancelable* progress) const
 {
     // Establish a local reference frame for the tile:
     GeoPoint centroid_world = key.getExtent().getCentroid();
-    osg::Matrix world2local, local2world;
+    osg::Matrixd world2local, local2world;
     centroid_world.createWorldToLocal(world2local);
     local2world.invert(world2local);
 
@@ -324,7 +324,7 @@ TileMesher::createMeshStandard(const TileKey& key, Cancelable* progress) const
 
 namespace
 {
-    void build_regular_gridded_mesh(weemesh::mesh_t& mesh, unsigned tileSize, const GeoLocator& locator, const osg::Matrix& world2local)
+    void build_regular_gridded_mesh(weemesh::mesh_t& mesh, unsigned tileSize, const GeoLocator& locator, const osg::Matrixd& world2local)
     {
         mesh.set_boundary_marker(VERTEX_BOUNDARY);
         mesh.set_constraint_marker(VERTEX_CONSTRAINT);
@@ -403,7 +403,7 @@ TileMesher::createMeshWithConstraints(
 
     // Establish a local reference frame for the tile:
     GeoPoint centroid_world = keyExtent.getCentroid();
-    osg::Matrix world2local, local2world;
+    osg::Matrixd world2local, local2world;
     centroid_world.createWorldToLocal(world2local);
     local2world.invert(world2local);
     

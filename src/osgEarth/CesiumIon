@@ -128,6 +128,12 @@ namespace osgEarth
         void setToken(const std::string& value);
         const std::string& getToken() const;
 
+        //! 서버 연결 오류 시 부모 타일 워크를 건너뛰고 즉시 빈 메시를 반환합니다.
+        //! PriorityTerrainMeshLayer가 폴백 레이어가 존재하는 자식에 대해 자동으로 설정합니다.
+        //! Default: false (기존 동작 — 부모 워크로 코어스 데이터 제공).
+        void setFastFailOnServerError(bool value) { _fastFailOnServerError = value; }
+        bool getFastFailOnServerError() const { return _fastFailOnServerError; }
+
     public: // Layer
 
         //! Establishes a connection to the TMS repository
@@ -152,7 +158,14 @@ namespace osgEarth
     private:
 
         URI _assetURI;
-        std::string _key;        
+        std::string _key;
+        bool _fastFailOnServerError = false;
+
+        // 서킷 브레이커: 서버 오류 후 _kCircuitCooldown 동안 요청을 건너뜀.
+        // fastFailOnServerError=true 일 때만 활성화.
+        static constexpr int64_t _kCircuitCooldownNs = 30LL * 1'000'000'000LL; // 30 seconds
+        mutable std::atomic<bool>    _circuitOpen{false};
+        mutable std::atomic<int64_t> _circuitRetryNs{0}; // steady_clock nanoseconds
     };
 
     /**

@@ -38,7 +38,7 @@ namespace osgEarth
     */
     struct OSGEARTH_EXPORT TileMesh
     {
-        osg::Matrix localToWorld;
+        osg::Matrixd localToWorld;
         osg::ref_ptr<osg::Vec3Array> verts;
         osg::ref_ptr<osg::Vec3Array> normals;
         osg::ref_ptr<osg::Vec3Array> uvs;

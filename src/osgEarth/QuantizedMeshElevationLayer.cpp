@@ -87,6 +87,24 @@ QuantizedMeshElevationLayer::createHeightFieldImplementation(
     if (!_source.valid() || !_source->isOpen())
         return GeoHeightField::INVALID;
 
+    // Upsampling: if the requested LOD is beyond the source's actual data level,
+    // fetch the nearest ancestor that has data and bilinearly subsample it to
+    // the requested extent. This produces a finer terrain mesh (better UV mapping)
+    // without requiring additional tile data on the server.
+    if (_maxSourceLevel < 99u && key.getLOD() > _maxSourceLevel)
+    {
+        TileKey ancestorKey = key.createAncestorKey(static_cast<int>(_maxSourceLevel));
+        if (!ancestorKey.valid())
+            return GeoHeightField::INVALID;
+
+        GeoHeightField ancestorHF = createHeightFieldImplementation(ancestorKey, progress);
+        if (!ancestorHF.valid())
+            return GeoHeightField::INVALID;
+
+        return ancestorHF.createSubSample(
+            key.getExtent(), getTileSize(), getTileSize(), INTERP_BILINEAR);
+    }
+
     // Fetch the terrain mesh in local (LTP) space.
     TileMesh mesh = _source->createTile(key, progress);
     if (!mesh.verts.valid() || mesh.verts->empty())

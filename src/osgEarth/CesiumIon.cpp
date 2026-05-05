@@ -11,8 +11,11 @@
 #include <osgEarth/Notify>
 #include <osgEarth/Locators>
 #include <osgEarth/GeoData>
+#include <osgEarth/Progress>
 
 #include <osgUtil/SmoothingVisitor>
+#include <atomic>
+#include <chrono>
 
 using namespace osgEarth;
 using namespace osgEarth::Contrib::ThreeDTiles;
@@ -524,7 +527,9 @@ namespace
         TileMesh mesh;
         osgEarth::GeoLocator locator(key.getExtent());
         osgEarth::GeoPoint centroid_world = key.getExtent().getCentroid();
-        osg::Matrix world2local, local2world;
+        // LOD 18+ 에서 float 행렬(osg::Matrix)은 ECEF 절댓값(~6,370km) 대비
+        // 타일 크기(~1.5km)의 비율로 재앙적 소거가 발생하므로 Matrixd를 사용한다.
+        osg::Matrixd world2local, local2world;
         centroid_world.createWorldToLocal(world2local);
         local2world.invert(world2local);
 
@@ -552,6 +557,7 @@ namespace
             float height = header.MinimumHeight + r * (header.MaximumHeight - header.MinimumHeight);
             unit.set(s, t, height);
             locator.unitToWorld(unit, model);
+            // Matrixd로 변환 → LOD 18+ 버텍스 정밀도 손실 방지
             modelLTP = model * world2local;
 
             int default_marker = VERTEX_VISIBLE | VERTEX_CONSTRAINT | VERTEX_HAS_ELEVATION;
@@ -604,18 +610,32 @@ namespace
         const TileKey& key,
         const URI& assetBase,
         const osgDB::Options* readOptions,
-        ProgressCallback* progress)
+        ProgressCallback* progress,
+        ReadResult::Code* out_code = nullptr,
+        bool fastFail = false)
     {
         const URI tileURI = makeCesiumTerrainTileUri(key, assetBase);
-        for (unsigned int attempt = 0; attempt < 4u; ++attempt)
+        // fastFail 모드(폴백 레이어가 있는 경우): 1회만 시도.
+        // 서버 다운/타임아웃 시 재시도 없이 즉시 반환해 폴백으로 넘어가도록 한다.
+        const unsigned maxAttempts = fastFail ? 1u : 4u;
+        ReadResult::Code lastCode = ReadResult::RESULT_NOT_FOUND;
+        for (unsigned int attempt = 0; attempt < maxAttempts; ++attempt)
         {
+            if (progress && progress->isCanceled())
+            {
+                lastCode = ReadResult::RESULT_CANCELED;
+                break;
+            }
             const ReadResult result = tileURI.readString(readOptions, progress);
+            lastCode = result.code();
             if (result.succeeded())
             {
+                if (out_code) *out_code = ReadResult::RESULT_OK;
                 std::stringstream buf(result.getString());
                 return quantizedMeshToTileMesh(key, buf);
             }
         }
+        if (out_code) *out_code = lastCode;
         return TileMesh();
     }
 
@@ -715,27 +735,56 @@ namespace
         return out;
     }
 }
-///////
-
 
 TileMesh CesiumIonTerrainMeshLayer::createTileImplementation(
     const TileKey& key,
     ProgressCallback* progress) const
 {
-    TileMesh mesh = tryReadCesiumQuantizedMeshForKey(key, _assetURI, getReadOptions(), progress);
+    // ── 서킷 브레이커 (fastFail 모드에서만 활성) ────────────────────────────
+    // 서버 오류 후 30초간 요청을 완전히 건너뛴다. HTTP 스택에 도달하지 않으므로
+    // 죽은 서버에 반복 요청을 보내지 않고 즉시 폴백 레이어로 넘어간다.
+    if (_fastFailOnServerError && _circuitOpen.load(std::memory_order_relaxed))
+    {
+        const int64_t now = std::chrono::steady_clock::now().time_since_epoch().count();
+        if (now < _circuitRetryNs.load(std::memory_order_relaxed))
+            return TileMesh(); // 쿨다운 중 — 요청 없이 즉시 반환
+        // 쿨다운 만료 → 회로 닫고 한 번 프로브
+        _circuitOpen.store(false, std::memory_order_relaxed);
+    }
+
+    ReadResult::Code code = ReadResult::RESULT_NOT_FOUND;
+    TileMesh mesh = tryReadCesiumQuantizedMeshForKey(key, _assetURI, getReadOptions(), progress, &code, _fastFailOnServerError);
     if (mesh.verts.valid())
     {
         applyConstraints(key, mesh);
         return mesh;
     }
 
+    // fastFailOnServerError: 연결 오류 → 서킷 열고 즉시 반환
+    if (_fastFailOnServerError && code != ReadResult::RESULT_NOT_FOUND)
+    {
+        _circuitOpen.store(true, std::memory_order_relaxed);
+        const int64_t retryAt = (std::chrono::steady_clock::now().time_since_epoch()
+                                 + std::chrono::nanoseconds(_kCircuitCooldownNs)).count();
+        _circuitRetryNs.store(retryAt, std::memory_order_relaxed);
+        return TileMesh();
+    }
+
     constexpr unsigned kMaxParentWalk = 16u;
     TileKey parentKey = key.createParentKey();
     for (unsigned hop = 0; hop < kMaxParentWalk && parentKey.valid(); ++hop, parentKey = parentKey.createParentKey())
     {
-        TileMesh parentMesh = tryReadCesiumQuantizedMeshForKey(parentKey, _assetURI, getReadOptions(), progress);
+        if (progress && progress->isCanceled())
+            return TileMesh();
+
+        TileMesh parentMesh = tryReadCesiumQuantizedMeshForKey(parentKey, _assetURI, getReadOptions(), progress, &code, _fastFailOnServerError);
         if (!parentMesh.verts.valid())
+        {
+            // fastFailOnServerError: 서버 오류면 부모 워크도 즉시 중단
+            if (_fastFailOnServerError && code != ReadResult::RESULT_NOT_FOUND)
+                return TileMesh();
             continue;
+        }
 
         TileMesh upsampled = clipParentTerrainMeshToChildTile(key, parentMesh);
         if (upsampled.verts.valid() && upsampled.verts->size() >= 3u)

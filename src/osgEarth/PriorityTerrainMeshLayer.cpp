@@ -4,6 +4,7 @@
  */
 #include "PriorityTerrainMeshLayer"
 #include "TerrainEngineNode"
+#include "CesiumIon"
 
 using namespace osgEarth;
 
@@ -92,6 +93,15 @@ PriorityTerrainMeshLayer::openImplementation()
             OE_WARN << LC << "Child layer \"" << layer->getName()
                     << "\" failed to open: " << s.message() << std::endl;
         }
+    }
+
+    // 폴백 레이어가 뒤에 있는 레이어(마지막 제외)에 fast-fail 설정:
+    // 서버 연결 오류 시 부모 워크 없이 즉시 다음 레이어로 넘어가도록 한다.
+    const std::size_t n = _layers.size();
+    for (std::size_t i = 0; i + 1 < n; ++i)
+    {
+        if (auto* cesium = dynamic_cast<CesiumIonTerrainMeshLayer*>(_layers[i].get()))
+            cesium->setFastFailOnServerError(true);
     }
 
     return Status::NoError;
