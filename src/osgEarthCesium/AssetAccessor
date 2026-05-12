@@ -9,6 +9,7 @@
 #include <CesiumAsync/IAssetResponse.h>
 #include <osgDB/Options>
 #include <osgEarth/Cache>
+#include <span>
 
 namespace osgEarth {
     namespace Cesium
@@ -24,7 +25,7 @@ namespace osgEarth {
 
             virtual const CesiumAsync::HttpHeaders& headers() const override;
 
-            virtual gsl::span<const std::byte> data() const override;
+            virtual std::span<const std::byte> data() const override;
 
             uint16_t _statusCode = 0;
             std::string _contentType;
@@ -71,7 +72,7 @@ namespace osgEarth {
                     const std::string& verb,
                     const std::string& url,
                     const std::vector<CesiumAsync::IAssetAccessor::THeader>& headers,
-                    const gsl::span<const std::byte>& contentPayload) override;
+                    const std::span<const std::byte>& contentPayload) override;
 
             virtual void tick() noexcept override;
 

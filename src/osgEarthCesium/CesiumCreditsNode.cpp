@@ -149,7 +149,7 @@ CesiumCreditsNode::CesiumCreditsNode(osg::View* view, CesiumUtility::CreditSyste
 
 void CesiumCreditsNode::nextFrame()
 {
-    _creditSystem->startNextFrame();
+    // getSnapshot() handles frame transitions internally in v0.60.0
 }
 
 void CesiumCreditsNode::updateCredits()
@@ -157,8 +157,8 @@ void CesiumCreditsNode::updateCredits()
     std::vector< ParsedCredit > parsedCredits;
 
     auto creditSystem = _creditSystem;
-    auto credits = creditSystem->getCreditsToShowThisFrame();
-    for (auto& credit : credits)
+    const auto& snapshot = creditSystem->getSnapshot();
+    for (auto& credit : snapshot.currentCredits)
     {
         if (creditSystem->shouldBeShownOnScreen(credit))
         {

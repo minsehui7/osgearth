@@ -113,7 +113,7 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
 
         // TODO:  Multiple views
         std::vector<Cesium3DTilesSelection::ViewState> viewStates;
-        Cesium3DTilesSelection::ViewState viewState = Cesium3DTilesSelection::ViewState::create(pos, dir, up, viewportSize, hfov, vfov);
+        Cesium3DTilesSelection::ViewState viewState(pos, dir, up, viewportSize, hfov, vfov);
         viewStates.push_back(viewState);
         Cesium3DTilesSelection::Tileset* tileset = (Cesium3DTilesSelection::Tileset*)_tileset;
         auto updates = tileset->updateView(viewStates);

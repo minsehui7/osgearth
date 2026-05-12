@@ -40,7 +40,7 @@ if (CESIUM_NATIVE_FOUND)
         PrepareRenderResources
         TaskProcessor)
 
-    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD 20)
 
     add_osgearth_library(
         TARGET ${LIB_NAME}
@@ -51,6 +51,10 @@ if (CESIUM_NATIVE_FOUND)
         FOLDER "NodeKits")
 
     target_link_libraries(${LIB_NAME} PRIVATE OE::CESIUM_NATIVE)
+
+    if(MSVC)
+        target_compile_options(${LIB_NAME} PRIVATE /Zc:__cplusplus /utf-8 /bigobj)
+    endif()
 
     # Include the Cesium Native headers BEFORE anything else to ensure that dependencies
     # that might be duplicated like spdlog are included from the Cesium Native headers.

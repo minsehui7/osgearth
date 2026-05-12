@@ -6,8 +6,10 @@
 #include "Settings"
 #include "CesiumIon"
 
-// TODO:  Replace this with the default key from Cesium
+#include <atomic>
+
 static std::string CESIUM_KEY = "";
+static std::atomic<bool> s_log3DTilesHttpUrls{false};
 
 namespace
 {
@@ -36,6 +38,16 @@ std::string  osgEarth::Cesium::getCesiumIonKey()
 void osgEarth::Cesium::setCesiumIonKey(const std::string& key)
 {
     CESIUM_KEY = key;
+}
+
+bool osgEarth::Cesium::getLog3DTilesHttpUrls()
+{
+    return s_log3DTilesHttpUrls.load(std::memory_order_relaxed);
+}
+
+void osgEarth::Cesium::setLog3DTilesHttpUrls(bool enabled)
+{
+    s_log3DTilesHttpUrls.store(enabled, std::memory_order_relaxed);
 }
 
 void osgEarth::Cesium::shutdown()

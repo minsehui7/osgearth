@@ -3,7 +3,9 @@
 * MIT License
 */
 #include "AssetAccessor"
+#include "Settings"
 
+#include <CesiumAsync/AsyncSystem.h>
 #include <osgEarth/Notify>
 #include <osgEarth/URI>
 #include <osgEarth/Registry>
@@ -62,9 +64,9 @@ const CesiumAsync::HttpHeaders& AssetResponse::headers() const
     return _headers;
 }
 
-gsl::span<const std::byte> AssetResponse::data() const
+std::span<const std::byte> AssetResponse::data() const
 {
-    return gsl::span<const std::byte>(_result.data(), _result.size());
+    return std::span<const std::byte>(_result.data(), _result.size());
 }
 
 /**********************************************/
@@ -88,7 +90,9 @@ AssetAccessor::get(const CesiumAsync::AsyncSystem& asyncSystem,
         [&](const auto& promise)
         {
             asyncSystem.runInWorkerThread([promise, request, url, headers, options]() {
-                // This should run in another thread.
+                if (osgEarth::Cesium::getLog3DTilesHttpUrls())
+                    OE_NOTICE << "[3DTiles] GET: " << url << std::endl;
+
                 URIContext uriContext;
                 for (auto header : headers)
                 {
@@ -119,6 +123,10 @@ AssetAccessor::get(const CesiumAsync::AsyncSystem& asyncSystem,
 
                 response->_result = result;
                 request->setResponse(std::move(response));
+
+                if (osgEarth::Cesium::getLog3DTilesHttpUrls())
+                    OE_NOTICE << "[3DTiles] " << request->_response->_statusCode << " " << url << std::endl;
+
                 promise.resolve(request);
                 });
         }
@@ -131,7 +139,7 @@ AssetAccessor::request(
     const std::string& verb,
     const std::string& url,
     const std::vector<CesiumAsync::IAssetAccessor::THeader>& headers,
-    const gsl::span<const std::byte>& contentPayload)
+    const std::span<const std::byte>& contentPayload)
 {
     auto request = std::make_shared<AssetRequest>(verb, url, headers);
     return asyncSystem.createFuture<std::shared_ptr<CesiumAsync::IAssetRequest>>(
