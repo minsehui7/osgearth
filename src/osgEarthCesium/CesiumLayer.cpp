@@ -87,7 +87,13 @@ CesiumNative3DTilesLayer::openImplementation()
         {
             overlays.push_back(*_options->rasterOverlay());
         }
-        _tilesetNode = new CesiumTilesetNode(_options->url()->full(), _options->server()->full(), token, *_options->maximumScreenSpaceError(), overlays);
+        _tilesetNode = new CesiumTilesetNode(
+            _options->url()->full(),
+            _options->server()->full(),
+            token,
+            *_options->maximumScreenSpaceError(),
+            overlays,
+            _renderStyle);
     }
     else if (_options->assetId().isSet())
     {
@@ -96,7 +102,13 @@ CesiumNative3DTilesLayer::openImplementation()
         {
             overlays.push_back(*_options->rasterOverlay());
         }
-        _tilesetNode = new CesiumTilesetNode(*_options->assetId(), _options->server()->full(), token, *_options->maximumScreenSpaceError(), overlays);
+        _tilesetNode = new CesiumTilesetNode(
+            *_options->assetId(),
+            _options->server()->full(),
+            token,
+            *_options->maximumScreenSpaceError(),
+            overlays,
+            _renderStyle);
     }
 
     if (!_tilesetNode.valid())
@@ -166,4 +178,16 @@ CesiumNative3DTilesLayer::setForbidHoles(bool forbidHoles)
     {
         _tilesetNode->setForbidHoles(forbidHoles);
     }
+}
+
+const TilesetRenderStyleOptions&
+CesiumNative3DTilesLayer::getRenderStyle() const
+{
+    return _renderStyle;
+}
+
+void
+CesiumNative3DTilesLayer::setRenderStyle(const TilesetRenderStyleOptions& renderStyle)
+{
+    _renderStyle = renderStyle;
 }

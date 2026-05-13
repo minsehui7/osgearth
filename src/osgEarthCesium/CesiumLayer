@@ -29,7 +29,7 @@ namespace osgEarth
                 OE_OPTION(float, maximumScreenSpaceError);
                 OE_OPTION(bool, forbidHoles);
 
-                virtual Config getConfig() const;
+                Config getConfig() const override;
             private:
                 void fromConfig(const Config& conf);
             };
@@ -61,24 +61,29 @@ namespace osgEarth
             bool getForbidHoles() const;
             void setForbidHoles(bool forbidHoles);
 
+            //! Optional override style for vector-style 3D Tiles.
+            const TilesetRenderStyleOptions& getRenderStyle() const;
+            void setRenderStyle(const TilesetRenderStyleOptions& renderStyle);
+
         public: // Layer
 
             //! Open the layer and return its status
-            virtual Status openImplementation();
+            Status openImplementation() override;
 
             //! Node created by this model layer
-            virtual osg::Node* getNode() const;
+            osg::Node* getNode() const override;
 
         protected: // Layer
 
             //! post-ctor initialization
-            virtual void init();
+            void init() override;
 
             virtual ~CesiumNative3DTilesLayer();
 
             std::string _key;
 
             osg::ref_ptr< osgEarth::Cesium::CesiumTilesetNode > _tilesetNode;
+            TilesetRenderStyleOptions _renderStyle;
         };
     }
 } // namespace osgEarth

@@ -21,6 +21,7 @@ set(CESIUM_NATIVE_DIR "" CACHE PATH "Root directory of cesium-native distributio
 set(CESIUM_NATIVE_VCPKG_INSTALLED "" CACHE PATH "Optional vcpkg_installed root from the cesium-native build (parent of lib/ and debug/lib/)")
 
 unset(CESIUM_NATIVE_FOUND)
+unset(CESIUM_NATIVE_INCLUDE_DIR CACHE)
 
 # Location the cesium-native installation:
 find_path(CESIUM_NATIVE_INCLUDE_DIR CesiumUtility/Uri.h
@@ -60,6 +61,8 @@ macro(find_cesium_library MY_LIBRARY_VAR MY_LIBRARY_NAME)
         find_library(${MY_LIBRARY_VAR}_LIBRARY_DEBUG
             NAMES
                 ${MY_LIBRARY_NAME}d
+                ${MY_LIBRARY_NAME}-d
+                ${MY_LIBRARY_NAME}
             PATHS
                 ${_CESIUM_DEBUG_LIB_PATHS}
             PATH_SUFFIXES lib64 lib
@@ -76,6 +79,7 @@ macro(find_cesium_library MY_LIBRARY_VAR MY_LIBRARY_NAME)
         set(MY_DEBUG_LIBRARY "${${MY_LIBRARY_VAR}_LIBRARY_DEBUG}")
         set(MY_RELEASE_LIBRARY "${${MY_LIBRARY_VAR}_LIBRARY_RELEASE}")
         # MSVC static vcpkg deps often use the same .lib name for Debug/Release (no "d" suffix).
+        # If debug/lib has no match, fall back to release only as a last resort.
         if(MY_RELEASE_LIBRARY AND NOT MY_DEBUG_LIBRARY)
             set(MY_DEBUG_LIBRARY "${MY_RELEASE_LIBRARY}")
         endif()

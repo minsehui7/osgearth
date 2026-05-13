@@ -13,7 +13,7 @@
 
 using namespace osgEarth::Cesium;
 
-CesiumTilesetNode::CesiumTilesetNode(unsigned int assetID, const std::string& server, const std::string& token, float maximumScreenSpaceError, std::vector<int> overlays)
+CesiumTilesetNode::CesiumTilesetNode(unsigned int assetID, const std::string& server, const std::string& token, float maximumScreenSpaceError, std::vector<int> overlays, const TilesetRenderStyleOptions& renderStyle)
 { 
     Context* context = CesiumIon::instance().getContext(server);
 
@@ -24,6 +24,7 @@ CesiumTilesetNode::CesiumTilesetNode(unsigned int assetID, const std::string& se
     Cesium3DTilesSelection::TilesetOptions options;    
     options.maximumScreenSpaceError = maximumScreenSpaceError;
     options.contentOptions.generateMissingNormalsSmooth = true;
+    options.rendererOptions = renderStyle;
     Cesium3DTilesSelection::Tileset* tileset = new Cesium3DTilesSelection::Tileset(externals, assetID, token, options, server);
 
     for (auto overlay: overlays)
@@ -37,7 +38,7 @@ CesiumTilesetNode::CesiumTilesetNode(unsigned int assetID, const std::string& se
     setCullingActive(false);    
 }
 
-CesiumTilesetNode::CesiumTilesetNode(const std::string& url, const std::string& server, const std::string& token, float maximumScreenSpaceError, std::vector<int> overlays)
+CesiumTilesetNode::CesiumTilesetNode(const std::string& url, const std::string& server, const std::string& token, float maximumScreenSpaceError, std::vector<int> overlays, const TilesetRenderStyleOptions& renderStyle)
 {
     Context* context = CesiumIon::instance().getContext(server);
 
@@ -48,6 +49,7 @@ CesiumTilesetNode::CesiumTilesetNode(const std::string& url, const std::string& 
     Cesium3DTilesSelection::TilesetOptions options;
     options.maximumScreenSpaceError = maximumScreenSpaceError;
     options.contentOptions.generateMissingNormalsSmooth = true;
+    options.rendererOptions = renderStyle;
     Cesium3DTilesSelection::Tileset* tileset = new Cesium3DTilesSelection::Tileset(externals, url, options);
     for (auto overlay : overlays)
     {

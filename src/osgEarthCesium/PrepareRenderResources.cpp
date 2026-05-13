@@ -6,8 +6,10 @@
 #include <CesiumGltfContent/GltfUtilities.h>
 #include <CesiumGltf/AccessorView.h>
 
+#include <osg/BlendFunc>
 #include <osg/Texture2D>
 #include <osg/Geometry>
+#include <osg/PolygonOffset>
 #include <osgEarth/ImageUtils>
 #include <osgEarth/Lighting>
 #include <osgEarth/Notify>
@@ -243,9 +245,10 @@ namespace {
     class NodeBuilder
     {
     public:
-        NodeBuilder(CesiumGltf::Model* model, const glm::dmat4& transform) :
+        NodeBuilder(CesiumGltf::Model* model, const glm::dmat4& transform, const TilesetRenderStyleOptions* renderStyle) :
             _model(model),
-            _transform(transform)
+            _transform(transform),
+            _renderStyle(renderStyle)
         {
             loadArrays();
             loadTextures();        
@@ -545,6 +548,8 @@ namespace {
                     }
                 }
 
+                applyRenderStyle(geom.get(), primitive);
+
                 geode->addChild(geom);
 
 
@@ -552,8 +557,91 @@ namespace {
             return geode;
         }
 
+        void applyRenderStyle(osg::Geometry* geom, const CesiumGltf::MeshPrimitive& primitive)
+        {
+            if (!geom)
+            {
+                return;
+            }
+
+            const CesiumGltf::Material* material = nullptr;
+            if (primitive.material >= 0 && primitive.material < _model->materials.size())
+            {
+                material = &_model->materials[primitive.material];
+            }
+
+            const bool materialDoubleSided = material && material->doubleSided;
+            const bool materialUnlit = material && material->getGenericExtension("KHR_materials_unlit") != nullptr;
+            const bool materialBlended = material &&
+                (material->alphaMode == CesiumGltf::Material::AlphaMode::BLEND);
+            const bool styleEnabled = _renderStyle && _renderStyle->enabled;
+
+            osg::StateSet* stateSet = geom->getOrCreateStateSet();
+            if (styleEnabled)
+            {
+                osg::ref_ptr<osg::Vec4Array> colors = new osg::Vec4Array();
+                colors->push_back(_renderStyle->fillColor);
+                geom->setColorArray(colors.get(), osg::Array::BIND_OVERALL);
+
+                osgEarth::MaterialGL3* styleMaterial = new osgEarth::MaterialGL3();
+                styleMaterial->setDiffuse(osg::Material::FRONT_AND_BACK, _renderStyle->fillColor);
+                styleMaterial->setAmbient(osg::Material::FRONT_AND_BACK, _renderStyle->fillColor);
+                stateSet->setAttributeAndModes(
+                    styleMaterial,
+                    osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
+            }
+
+            const bool forceUnlit = styleEnabled && _renderStyle->forceUnlit;
+            if (forceUnlit || materialUnlit)
+            {
+                stateSet->setMode(GL_LIGHTING, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE);
+            }
+
+            const bool forceDoubleSided = styleEnabled && _renderStyle->doubleSided;
+            if (forceDoubleSided || materialDoubleSided)
+            {
+                stateSet->setMode(GL_CULL_FACE, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE);
+            }
+
+            const float alpha = styleEnabled ? _renderStyle->fillColor.a() : 1.f;
+            if (materialBlended || alpha < 0.999f)
+            {
+                stateSet->setRenderingHint(osg::StateSet::TRANSPARENT_BIN);
+                stateSet->setMode(GL_BLEND, osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
+                stateSet->setAttributeAndModes(
+                    new osg::BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA),
+                    osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
+            }
+
+            if (!styleEnabled)
+            {
+                return;
+            }
+
+            if (_renderStyle->alwaysOnTop)
+            {
+                stateSet->setRenderingHint(osg::StateSet::TRANSPARENT_BIN);
+                stateSet->setRenderBinDetails(100050, "DepthSortedBin");
+                stateSet->setMode(GL_DEPTH_TEST, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE);
+            }
+            else
+            {
+                if (_renderStyle->renderBin >= 0)
+                {
+                    stateSet->setRenderBinDetails(_renderStyle->renderBin, "RenderBin");
+                }
+                if (_renderStyle->polygonOffset)
+                {
+                    stateSet->setAttributeAndModes(
+                        new osg::PolygonOffset(_renderStyle->polygonOffsetFactor, _renderStyle->polygonOffsetUnits),
+                        osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
+                }
+            }
+        }
+
         glm::dmat4 _transform;
         CesiumGltf::Model* _model;
+        const TilesetRenderStyleOptions* _renderStyle = nullptr;
 
         std::vector< osg::ref_ptr< osg::Array> > _arrays;
         std::vector< osg::ref_ptr< osg::Texture2D > > _textures;
@@ -578,7 +666,9 @@ PrepareRendererResources::prepareInLoadThread(
     }
 
 
-    NodeBuilder builder(model, transform);
+    const TilesetRenderStyleOptions* renderStyle =
+        std::any_cast<TilesetRenderStyleOptions>(&rendererOptions);
+    NodeBuilder builder(model, transform, renderStyle);
     LoadThreadResult* result = new LoadThreadResult;
     result->node = builder.build();
     //result->node->setName(tileLoadResult.pCompletedRequest->url());

@@ -11,11 +11,25 @@
 
 #include <osgEarth/Notify>
 #include <osg/Node>
+#include <osg/Vec4>
 
 namespace osgEarth {
     namespace Cesium
     {
         using namespace osgEarth;
+
+        struct TilesetRenderStyleOptions
+        {
+            bool enabled = false;
+            osg::Vec4f fillColor = osg::Vec4f(1.f, 1.f, 1.f, 1.f);
+            bool forceUnlit = false;
+            bool doubleSided = false;
+            bool alwaysOnTop = false;
+            int renderBin = -1;
+            bool polygonOffset = false;
+            float polygonOffsetFactor = -1.5f;
+            float polygonOffsetUnits = -1.5f;
+        };
 
         class LoadThreadResult
         {
@@ -57,27 +71,27 @@ namespace osgEarth {
                     const CesiumAsync::AsyncSystem& asyncSystem,
                     Cesium3DTilesSelection::TileLoadResult&& tileLoadResult,
                     const glm::dmat4& transform,
-                    const std::any& rendererOptions);
+                    const std::any& rendererOptions) override;
 
-            virtual void* prepareInMainThread(Cesium3DTilesSelection::Tile& tile, void* pLoadThreadResult);
+            virtual void* prepareInMainThread(Cesium3DTilesSelection::Tile& tile, void* pLoadThreadResult) override;
 
             virtual void free(
                 Cesium3DTilesSelection::Tile& tile,
                 void* pLoadThreadResult,
-                void* pMainThreadResult) noexcept;
+                void* pMainThreadResult) noexcept override;
 
             virtual void* prepareRasterInLoadThread(
                 CesiumGltf::ImageAsset& image,
-                const std::any& rendererOptions);
+                const std::any& rendererOptions) override;
 
             virtual void* prepareRasterInMainThread(
                 CesiumRasterOverlays::RasterOverlayTile& rasterTile,
-                void* pLoadThreadResult);
+                void* pLoadThreadResult) override;
 
             virtual void freeRaster(
                 const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
                 void* pLoadThreadResult,
-                void* pMainThreadResult) noexcept;
+                void* pMainThreadResult) noexcept override;
 
             virtual void attachRasterInMainThread(
                 const Cesium3DTilesSelection::Tile& tile,
@@ -85,13 +99,13 @@ namespace osgEarth {
                 const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
                 void* pMainThreadRendererResources,
                 const glm::dvec2& translation,
-                const glm::dvec2& scale);
+                const glm::dvec2& scale) override;
 
             virtual void detachRasterInMainThread(
                 const Cesium3DTilesSelection::Tile& tile,
                 int32_t overlayTextureCoordinateID,
                 const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
-                void* pMainThreadRendererResources) noexcept;
+                void* pMainThreadRendererResources) noexcept override;
         };
     }
 }
