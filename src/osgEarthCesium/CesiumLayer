@@ -28,6 +28,7 @@ namespace osgEarth
                 OE_OPTION(int, rasterOverlay);
                 OE_OPTION(float, maximumScreenSpaceError);
                 OE_OPTION(bool, forbidHoles);
+                OE_OPTION(int, minimumRenderableLevel);
 
                 Config getConfig() const override;
             private:
@@ -60,6 +61,10 @@ namespace osgEarth
             //! Whether to forbid holes
             bool getForbidHoles() const;
             void setForbidHoles(bool forbidHoles);
+
+            //! Minimum map zoom level at which this tileset may render/request content.
+            int getMinimumRenderableLevel() const;
+            void setMinimumRenderableLevel(int level);
 
             //! Optional override style for vector-style 3D Tiles.
             const TilesetRenderStyleOptions& getRenderStyle() const;

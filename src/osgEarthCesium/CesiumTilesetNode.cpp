@@ -11,10 +11,32 @@
 #include <osgUtil/CullVisitor>
 #include <Cesium3DTilesSelection/BoundingVolume.h>
 
+#include <algorithm>
+#include <cmath>
+
 using namespace osgEarth::Cesium;
 
-CesiumTilesetNode::CesiumTilesetNode(unsigned int assetID, const std::string& server, const std::string& token, float maximumScreenSpaceError, std::vector<int> overlays, const TilesetRenderStyleOptions& renderStyle)
+namespace
+{
+    double estimateViewZoomLevel(
+        const osg::Vec3d& eye,
+        double vfovRad,
+        double viewportHeightPx)
+    {
+        constexpr double kEarthRadiusM = 6378137.0;
+        constexpr double kTilePixels = 256.0;
+        constexpr double kEarthCircumferenceM = 2.0 * 3.14159265358979323846 * kEarthRadiusM;
+        const double eyeRadius = eye.length();
+        const double height = std::max(eyeRadius - kEarthRadiusM, 1.0);
+        const double viewHeightMeters = 2.0 * height * std::tan(vfovRad * 0.5);
+        const double mpp = viewHeightMeters / std::max(viewportHeightPx, 1.0);
+        return std::log2(kEarthCircumferenceM / (mpp * kTilePixels));
+    }
+}
+
+CesiumTilesetNode::CesiumTilesetNode(unsigned int assetID, const std::string& server, const std::string& token, float maximumScreenSpaceError, std::vector<int> overlays, const TilesetRenderStyleOptions& renderStyle, int minimumRenderableLevel)
 { 
+    _minimumRenderableLevel = minimumRenderableLevel;
     Context* context = CesiumIon::instance().getContext(server);
 
     Cesium3DTilesSelection::TilesetExternals externals{
@@ -38,8 +60,9 @@ CesiumTilesetNode::CesiumTilesetNode(unsigned int assetID, const std::string& se
     setCullingActive(false);    
 }
 
-CesiumTilesetNode::CesiumTilesetNode(const std::string& url, const std::string& server, const std::string& token, float maximumScreenSpaceError, std::vector<int> overlays, const TilesetRenderStyleOptions& renderStyle)
+CesiumTilesetNode::CesiumTilesetNode(const std::string& url, const std::string& server, const std::string& token, float maximumScreenSpaceError, std::vector<int> overlays, const TilesetRenderStyleOptions& renderStyle, int minimumRenderableLevel)
 {
+    _minimumRenderableLevel = minimumRenderableLevel;
     Context* context = CesiumIon::instance().getContext(server);
 
     Cesium3DTilesSelection::TilesetExternals externals{
@@ -92,6 +115,16 @@ void CesiumTilesetNode::setForbidHoles(bool forbidHoles)
     tileset->getOptions().forbidHoles = forbidHoles;
 }
 
+int CesiumTilesetNode::getMinimumRenderableLevel() const
+{
+    return _minimumRenderableLevel;
+}
+
+void CesiumTilesetNode::setMinimumRenderableLevel(int level)
+{
+    _minimumRenderableLevel = level;
+}
+
 void
 CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
 {
@@ -112,6 +145,17 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         cv->getProjectionMatrix()->getPerspective(vfov, ar, znear, zfar);
         vfov = osg::DegreesToRadians(vfov);
         double hfov = 2 * atan(tan(vfov / 2) * (ar));
+
+        if (_minimumRenderableLevel >= 0)
+        {
+            const double viewZoom = estimateViewZoomLevel(osgEye, vfov, cv->getViewport()->height());
+            if (viewZoom < static_cast<double>(_minimumRenderableLevel))
+            {
+                removeChildren(0, getNumChildren());
+                osg::Group::traverse(nv);
+                return;
+            }
+        }
 
         // TODO:  Multiple views
         std::vector<Cesium3DTilesSelection::ViewState> viewStates;

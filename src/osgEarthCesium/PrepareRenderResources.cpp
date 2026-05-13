@@ -12,15 +12,345 @@
 #include <osg/PolygonOffset>
 #include <osgEarth/ImageUtils>
 #include <osgEarth/Lighting>
+#include <osgEarth/LineDrawable>
 #include <osgEarth/Notify>
 #include <osgEarth/Registry>
 #include <osg/MatrixTransform>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <limits>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 using namespace osgEarth::Cesium;
 
 namespace
 {
+    struct EdgeUse
+    {
+        unsigned int a = 0u;
+        unsigned int b = 0u;
+        unsigned int count = 0u;
+    };
+
+    struct TileId
+    {
+        int z = -1;
+        int x = -1;
+        int y = -1;
+    };
+
+    struct TileBoundsRad
+    {
+        double west = 0.0;
+        double south = 0.0;
+        double east = 0.0;
+        double north = 0.0;
+    };
+
+    struct TileLocalFrame
+    {
+        bool valid = false;
+        TileBoundsRad bounds;
+        double origin[3]{};
+        double east[3]{};
+        double north[3]{};
+        double up[3]{};
+    };
+
+    std::uint64_t edgeKey(unsigned int a, unsigned int b)
+    {
+        const unsigned int lo = std::min(a, b);
+        const unsigned int hi = std::max(a, b);
+        return (static_cast<std::uint64_t>(lo) << 32u) | static_cast<std::uint64_t>(hi);
+    }
+
+    void addUndirectedEdge(
+        std::unordered_map<std::uint64_t, EdgeUse>& edges,
+        unsigned int a,
+        unsigned int b)
+    {
+        if (a == b)
+        {
+            return;
+        }
+        EdgeUse& use = edges[edgeKey(a, b)];
+        if (use.count == 0u)
+        {
+            use.a = std::min(a, b);
+            use.b = std::max(a, b);
+        }
+        ++use.count;
+    }
+
+    template<typename IndexArrayT>
+    void collectTriangleBoundaryEdges(
+        const IndexArrayT* indices,
+        std::unordered_map<std::uint64_t, EdgeUse>& edges)
+    {
+        if (!indices)
+        {
+            return;
+        }
+        for (std::size_t i = 0; i + 2 < indices->size(); i += 3)
+        {
+            const unsigned int a = static_cast<unsigned int>((*indices)[i + 0]);
+            const unsigned int b = static_cast<unsigned int>((*indices)[i + 1]);
+            const unsigned int c = static_cast<unsigned int>((*indices)[i + 2]);
+            addUndirectedEdge(edges, a, b);
+            addUndirectedEdge(edges, b, c);
+            addUndirectedEdge(edges, c, a);
+        }
+    }
+
+    bool parsePositiveInt(const std::string& s, int* out)
+    {
+        if (s.empty() || !out)
+        {
+            return false;
+        }
+        char* end = nullptr;
+        const long v = std::strtol(s.c_str(), &end, 10);
+        if (end == s.c_str() || *end != '\0' || v < 0 || v > std::numeric_limits<int>::max())
+        {
+            return false;
+        }
+        *out = static_cast<int>(v);
+        return true;
+    }
+
+    bool parseTileIdFromUrl(const std::string& url, TileId* out)
+    {
+        if (!out)
+        {
+            return false;
+        }
+        std::string path = url;
+        const std::size_t q = path.find_first_of("?#");
+        if (q != std::string::npos)
+        {
+            path.resize(q);
+        }
+        for (char& c : path)
+        {
+            if (c == '\\')
+            {
+                c = '/';
+            }
+        }
+        const std::size_t dot = path.rfind(".glb");
+        if (dot == std::string::npos)
+        {
+            return false;
+        }
+        const std::size_t yStart = path.rfind('/', dot);
+        if (yStart == std::string::npos)
+        {
+            return false;
+        }
+        const std::size_t xEnd = yStart;
+        const std::size_t xStart = path.rfind('/', xEnd - 1);
+        if (xStart == std::string::npos)
+        {
+            return false;
+        }
+        const std::size_t zEnd = xStart;
+        const std::size_t zStart = path.rfind('/', zEnd - 1);
+        if (zStart == std::string::npos)
+        {
+            return false;
+        }
+
+        TileId id;
+        if (!parsePositiveInt(path.substr(zStart + 1, zEnd - zStart - 1), &id.z) ||
+            !parsePositiveInt(path.substr(xStart + 1, xEnd - xStart - 1), &id.x) ||
+            !parsePositiveInt(path.substr(yStart + 1, dot - yStart - 1), &id.y))
+        {
+            return false;
+        }
+        *out = id;
+        return true;
+    }
+
+    TileBoundsRad geodeticTileBounds(const TileId& id)
+    {
+        constexpr double kPi = 3.14159265358979323846;
+        const unsigned tiles = 1u << static_cast<unsigned>(id.z);
+        const double lonExtent = 360.0 / static_cast<double>(tiles);
+        const double latExtent = 180.0 / static_cast<double>(tiles);
+        const double westDeg = -180.0 + static_cast<double>(id.x) * lonExtent;
+        const double eastDeg = -180.0 + static_cast<double>(id.x + 1) * lonExtent;
+        const double northDeg = 90.0 - static_cast<double>(id.y) * latExtent;
+        const double southDeg = 90.0 - static_cast<double>(id.y + 1) * latExtent;
+        return TileBoundsRad{
+            westDeg * (kPi / 180.0),
+            southDeg * (kPi / 180.0),
+            eastDeg * (kPi / 180.0),
+            northDeg * (kPi / 180.0)};
+    }
+
+    void geodeticRadHeightToEcef(
+        double lonRad,
+        double latRad,
+        double heightM,
+        double* ox,
+        double* oy,
+        double* oz)
+    {
+        constexpr double kA = 6378137.0;
+        constexpr double kInvF = 298.257223563;
+        constexpr double kF = 1.0 / kInvF;
+        constexpr double kE2 = kF * (2.0 - kF);
+        const double sinLat = std::sin(latRad);
+        const double cosLat = std::cos(latRad);
+        const double sinLon = std::sin(lonRad);
+        const double cosLon = std::cos(lonRad);
+        const double n = kA / std::sqrt(1.0 - kE2 * sinLat * sinLat);
+        *ox = (n + heightM) * cosLat * cosLon;
+        *oy = (n + heightM) * cosLat * sinLon;
+        *oz = (n * (1.0 - kE2) + heightM) * sinLat;
+    }
+
+    void ecefToGeodeticRadHeight(
+        double x,
+        double y,
+        double z,
+        double* lonRad,
+        double* latRad,
+        double* heightM)
+    {
+        constexpr double kPi = 3.14159265358979323846;
+        constexpr double kA = 6378137.0;
+        constexpr double kInvF = 298.257223563;
+        constexpr double kF = 1.0 / kInvF;
+        constexpr double kB = kA * (1.0 - kF);
+        constexpr double kE2 = kF * (2.0 - kF);
+        constexpr double kEp2 = (kA * kA - kB * kB) / (kB * kB);
+
+        const double p = std::sqrt(x * x + y * y);
+        *lonRad = std::atan2(y, x);
+        if (p <= std::numeric_limits<double>::epsilon())
+        {
+            *latRad = (z >= 0.0) ? (kPi * 0.5) : (-kPi * 0.5);
+            *heightM = std::fabs(z) - kB;
+            return;
+        }
+
+        const double theta = std::atan2(z * kA, p * kB);
+        const double sinTheta = std::sin(theta);
+        const double cosTheta = std::cos(theta);
+        *latRad = std::atan2(
+            z + kEp2 * kB * sinTheta * sinTheta * sinTheta,
+            p - kE2 * kA * cosTheta * cosTheta * cosTheta);
+        const double sinLat = std::sin(*latRad);
+        const double n = kA / std::sqrt(1.0 - kE2 * sinLat * sinLat);
+        *heightM = p / std::cos(*latRad) - n;
+    }
+
+    double unwrapLonNear(double lonRad, double referenceRad)
+    {
+        constexpr double kPi = 3.14159265358979323846;
+        constexpr double kTwoPi = 6.28318530717958647692;
+        while (lonRad - referenceRad > kPi)
+        {
+            lonRad -= kTwoPi;
+        }
+        while (lonRad - referenceRad < -kPi)
+        {
+            lonRad += kTwoPi;
+        }
+        return lonRad;
+    }
+
+    TileLocalFrame makeTileLocalFrame(const TileId& id)
+    {
+        TileLocalFrame out;
+        out.valid = id.z >= 0;
+        if (!out.valid)
+        {
+            return out;
+        }
+        out.bounds = geodeticTileBounds(id);
+        const double lonC = (out.bounds.west + out.bounds.east) * 0.5;
+        const double latC = (out.bounds.south + out.bounds.north) * 0.5;
+        const double sinLon = std::sin(lonC);
+        const double cosLon = std::cos(lonC);
+        const double sinLat = std::sin(latC);
+        const double cosLat = std::cos(latC);
+
+        geodeticRadHeightToEcef(
+            out.bounds.west, out.bounds.south, 0.0,
+            &out.origin[0], &out.origin[1], &out.origin[2]);
+
+        out.east[0] = -sinLon;
+        out.east[1] = cosLon;
+        out.east[2] = 0.0;
+        out.north[0] = -sinLat * cosLon;
+        out.north[1] = -sinLat * sinLon;
+        out.north[2] = cosLat;
+        out.up[0] = cosLat * cosLon;
+        out.up[1] = cosLat * sinLon;
+        out.up[2] = sinLat;
+        return out;
+    }
+
+    bool gltfPointToLonLat(
+        const osg::Vec3& p,
+        const TileLocalFrame& frame,
+        double* lonRad,
+        double* latRad)
+    {
+        if (!frame.valid || !lonRad || !latRad)
+        {
+            return false;
+        }
+        const double eastM = static_cast<double>(p.x());
+        const double upM = static_cast<double>(p.y());
+        const double northM = -static_cast<double>(p.z());
+        const double ecefX = frame.origin[0] + eastM * frame.east[0] +
+            northM * frame.north[0] + upM * frame.up[0];
+        const double ecefY = frame.origin[1] + eastM * frame.east[1] +
+            northM * frame.north[1] + upM * frame.up[1];
+        const double ecefZ = frame.origin[2] + eastM * frame.east[2] +
+            northM * frame.north[2] + upM * frame.up[2];
+        double heightM = 0.0;
+        ecefToGeodeticRadHeight(ecefX, ecefY, ecefZ, lonRad, latRad, &heightM);
+        *lonRad = unwrapLonNear(*lonRad, (frame.bounds.west + frame.bounds.east) * 0.5);
+        return std::isfinite(*lonRad) && std::isfinite(*latRad);
+    }
+
+    bool isTileGridEdge(
+        const osg::Vec3& a,
+        const osg::Vec3& b,
+        const TileLocalFrame& frame)
+    {
+        double lonA = 0.0, latA = 0.0, lonB = 0.0, latB = 0.0;
+        if (!gltfPointToLonLat(a, frame, &lonA, &latA) ||
+            !gltfPointToLonLat(b, frame, &lonB, &latB))
+        {
+            return false;
+        }
+
+        const double lonSpan = std::max(std::fabs(frame.bounds.east - frame.bounds.west), 1e-15);
+        const double latSpan = std::max(std::fabs(frame.bounds.north - frame.bounds.south), 1e-15);
+        const double lonEps = std::max(lonSpan * 1e-5, 1e-9);
+        const double latEps = std::max(latSpan * 1e-5, 1e-9);
+        const bool onWest = std::fabs(lonA - frame.bounds.west) <= lonEps &&
+            std::fabs(lonB - frame.bounds.west) <= lonEps;
+        const bool onEast = std::fabs(lonA - frame.bounds.east) <= lonEps &&
+            std::fabs(lonB - frame.bounds.east) <= lonEps;
+        const bool onSouth = std::fabs(latA - frame.bounds.south) <= latEps &&
+            std::fabs(latB - frame.bounds.south) <= latEps;
+        const bool onNorth = std::fabs(latA - frame.bounds.north) <= latEps &&
+            std::fabs(latB - frame.bounds.north) <= latEps;
+        return onWest || onEast || onSouth || onNorth;
+    }
+
     #ifdef GL_R
     const GLenum redFormat = GL_R;
     #else
@@ -245,10 +575,15 @@ namespace {
     class NodeBuilder
     {
     public:
-        NodeBuilder(CesiumGltf::Model* model, const glm::dmat4& transform, const TilesetRenderStyleOptions* renderStyle) :
+        NodeBuilder(
+            CesiumGltf::Model* model,
+            const glm::dmat4& transform,
+            const TilesetRenderStyleOptions* renderStyle,
+            const TileLocalFrame& tileFrame) :
             _model(model),
             _transform(transform),
-            _renderStyle(renderStyle)
+            _renderStyle(renderStyle),
+            _tileFrame(tileFrame)
         {
             loadArrays();
             loadTextures();        
@@ -552,9 +887,99 @@ namespace {
 
                 geode->addChild(geom);
 
+                osg::ref_ptr<osg::Drawable> edgeDrawable = createStyledEdgeDrawable(geom.get(), primitive);
+                if (edgeDrawable.valid())
+                {
+                    geode->addChild(edgeDrawable.get());
+                }
 
             }
             return geode;
+        }
+
+        osg::Drawable* createStyledEdgeDrawable(
+            osg::Geometry* geom,
+            const CesiumGltf::MeshPrimitive& primitive)
+        {
+            if (!geom || !_renderStyle || !_renderStyle->enabled || !_renderStyle->strokeEnabled)
+            {
+                return nullptr;
+            }
+            if (primitive.mode != CesiumGltf::MeshPrimitive::Mode::TRIANGLES)
+            {
+                return nullptr;
+            }
+            if (primitive.indices < 0 || primitive.indices >= static_cast<int>(_arrays.size()))
+            {
+                return nullptr;
+            }
+
+            const osg::Vec3Array* positions = dynamic_cast<const osg::Vec3Array*>(geom->getVertexArray());
+            if (!positions || positions->empty())
+            {
+                return nullptr;
+            }
+
+            const osg::Array* primitiveArray = _arrays[primitive.indices].get();
+            std::unordered_map<std::uint64_t, EdgeUse> edges;
+            if (const osg::UShortArray* indices = dynamic_cast<const osg::UShortArray*>(primitiveArray))
+            {
+                collectTriangleBoundaryEdges(indices, edges);
+            }
+            else if (const osg::UIntArray* indices = dynamic_cast<const osg::UIntArray*>(primitiveArray))
+            {
+                collectTriangleBoundaryEdges(indices, edges);
+            }
+            else if (const osg::UByteArray* indices = dynamic_cast<const osg::UByteArray*>(primitiveArray))
+            {
+                collectTriangleBoundaryEdges(indices, edges);
+            }
+
+            if (edges.empty())
+            {
+                return nullptr;
+            }
+
+            osg::ref_ptr<osgEarth::LineDrawable> lines = new osgEarth::LineDrawable(GL_LINES);
+            lines->setLineWidth(std::max(_renderStyle->strokeWidth, 1.0f));
+            lines->setColor(_renderStyle->strokeColor);
+
+            for (const auto& kv : edges)
+            {
+                const EdgeUse& edge = kv.second;
+                if (edge.count != 1u || edge.a >= positions->size() || edge.b >= positions->size())
+                {
+                    continue;
+                }
+                const osg::Vec3& a = (*positions)[edge.a];
+                const osg::Vec3& b = (*positions)[edge.b];
+                if (isTileGridEdge(a, b, _tileFrame))
+                {
+                    continue;
+                }
+                lines->pushVertex(a);
+                lines->pushVertex(b);
+            }
+
+            if (lines->getNumVerts() == 0u)
+            {
+                return nullptr;
+            }
+
+            lines->dirty();
+            osg::StateSet* stateSet = lines->getOrCreateStateSet();
+            stateSet->setMode(GL_LIGHTING, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE);
+            stateSet->setMode(GL_CULL_FACE, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE);
+            stateSet->setMode(GL_BLEND, osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
+            stateSet->setAttributeAndModes(
+                new osg::BlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA),
+                osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
+            stateSet->setRenderingHint(osg::StateSet::TRANSPARENT_BIN);
+            stateSet->setRenderBinDetails(
+                _renderStyle->alwaysOnTop ? 100052 : 100051,
+                "DepthSortedBin");
+            stateSet->setMode(GL_DEPTH_TEST, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE);
+            return lines.release();
         }
 
         void applyRenderStyle(osg::Geometry* geom, const CesiumGltf::MeshPrimitive& primitive)
@@ -642,6 +1067,7 @@ namespace {
         glm::dmat4 _transform;
         CesiumGltf::Model* _model;
         const TilesetRenderStyleOptions* _renderStyle = nullptr;
+        TileLocalFrame _tileFrame;
 
         std::vector< osg::ref_ptr< osg::Array> > _arrays;
         std::vector< osg::ref_ptr< osg::Texture2D > > _textures;
@@ -668,7 +1094,16 @@ PrepareRendererResources::prepareInLoadThread(
 
     const TilesetRenderStyleOptions* renderStyle =
         std::any_cast<TilesetRenderStyleOptions>(&rendererOptions);
-    NodeBuilder builder(model, transform, renderStyle);
+
+    TileId tileId;
+    TileLocalFrame tileFrame;
+    if (tileLoadResult.pCompletedRequest &&
+        parseTileIdFromUrl(tileLoadResult.pCompletedRequest->url(), &tileId))
+    {
+        tileFrame = makeTileLocalFrame(tileId);
+    }
+
+    NodeBuilder builder(model, transform, renderStyle, tileFrame);
     LoadThreadResult* result = new LoadThreadResult;
     result->node = builder.build();
     //result->node->setName(tileLoadResult.pCompletedRequest->url());

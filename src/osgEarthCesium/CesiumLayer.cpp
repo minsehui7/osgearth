@@ -27,6 +27,7 @@ CesiumNative3DTilesLayer::Options::getConfig() const
     conf.set("raster_overlay", _rasterOverlay);
     conf.set("max_sse", _maximumScreenSpaceError);
     conf.set("forbid_holes", _forbidHoles);
+    conf.set("min_render_level", _minimumRenderableLevel);
 
     return conf;
 }
@@ -37,6 +38,7 @@ CesiumNative3DTilesLayer::Options::fromConfig(const Config& conf)
     _server.init("https://api.cesium.com/");
     _maximumScreenSpaceError.setDefault(16.0f);
     _forbidHoles.setDefault(false);
+    _minimumRenderableLevel.setDefault(-1);
     conf.get("server", _server);
     conf.get("url", _url);
     conf.get("asset_id", _assetId);
@@ -44,6 +46,7 @@ CesiumNative3DTilesLayer::Options::fromConfig(const Config& conf)
     conf.get("raster_overlay", _rasterOverlay);
     conf.get("max_sse", _maximumScreenSpaceError);
     conf.get("forbid_holes", _forbidHoles);
+    conf.get("min_render_level", _minimumRenderableLevel);
 }
 
 //........................................................................
@@ -93,7 +96,8 @@ CesiumNative3DTilesLayer::openImplementation()
             token,
             *_options->maximumScreenSpaceError(),
             overlays,
-            _renderStyle);
+            _renderStyle,
+            *_options->minimumRenderableLevel());
     }
     else if (_options->assetId().isSet())
     {
@@ -108,7 +112,8 @@ CesiumNative3DTilesLayer::openImplementation()
             token,
             *_options->maximumScreenSpaceError(),
             overlays,
-            _renderStyle);
+            _renderStyle,
+            *_options->minimumRenderableLevel());
     }
 
     if (!_tilesetNode.valid())
@@ -117,6 +122,7 @@ CesiumNative3DTilesLayer::openImplementation()
     }
 
     _tilesetNode->setForbidHoles(getForbidHoles());
+    _tilesetNode->setMinimumRenderableLevel(getMinimumRenderableLevel());
 
     return STATUS_OK;
 }
@@ -177,6 +183,22 @@ CesiumNative3DTilesLayer::setForbidHoles(bool forbidHoles)
     if (_tilesetNode)
     {
         _tilesetNode->setForbidHoles(forbidHoles);
+    }
+}
+
+int
+CesiumNative3DTilesLayer::getMinimumRenderableLevel() const
+{
+    return *options().minimumRenderableLevel();
+}
+
+void
+CesiumNative3DTilesLayer::setMinimumRenderableLevel(int level)
+{
+    options().minimumRenderableLevel() = level;
+    if (_tilesetNode)
+    {
+        _tilesetNode->setMinimumRenderableLevel(level);
     }
 }
 

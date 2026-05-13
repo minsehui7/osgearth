@@ -16,8 +16,8 @@ namespace osgEarth { namespace Cesium
     class OSGEARTHCESIUM_EXPORT CesiumTilesetNode : public osg::Group
     {
     public:
-        CesiumTilesetNode(unsigned int assetID, const std::string& server = "", const std::string& token = "", float maximumScreenSpaceError = 16.0f, std::vector<int> overlays = std::vector<int>(), const TilesetRenderStyleOptions& renderStyle = TilesetRenderStyleOptions());
-        CesiumTilesetNode(const std::string& url, const std::string& server = "", const std::string& token = "", float maximumScreenSpaceError = 16.0f, std::vector<int> overlays = std::vector<int>(), const TilesetRenderStyleOptions& renderStyle = TilesetRenderStyleOptions());
+        CesiumTilesetNode(unsigned int assetID, const std::string& server = "", const std::string& token = "", float maximumScreenSpaceError = 16.0f, std::vector<int> overlays = std::vector<int>(), const TilesetRenderStyleOptions& renderStyle = TilesetRenderStyleOptions(), int minimumRenderableLevel = -1);
+        CesiumTilesetNode(const std::string& url, const std::string& server = "", const std::string& token = "", float maximumScreenSpaceError = 16.0f, std::vector<int> overlays = std::vector<int>(), const TilesetRenderStyleOptions& renderStyle = TilesetRenderStyleOptions(), int minimumRenderableLevel = -1);
 
         ~CesiumTilesetNode();
 
@@ -31,8 +31,12 @@ namespace osgEarth { namespace Cesium
         bool getForbidHoles() const;
         void setForbidHoles(bool forbidHoles);
 
+        int getMinimumRenderableLevel() const;
+        void setMinimumRenderableLevel(int level);
+
     private:        
         void* _tileset = nullptr;
+        int _minimumRenderableLevel = -1;
     };
 } }
 
