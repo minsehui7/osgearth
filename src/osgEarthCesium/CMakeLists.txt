@@ -6,8 +6,6 @@ if (CESIUM_NATIVE_FOUND)
 
     set(LIB_NAME osgEarthCesium)
 
-    set(OSGEARTH_HAVE_CESIUM_NODEKIT ON PARENT_SCOPE) # for BuildConfig
-
     if(OSGEARTH_BUILD_SHARED_LIBS)
         add_definitions(-DOSGEARTHCESIUM_LIBRARY)
     else()
@@ -49,6 +47,11 @@ if (CESIUM_NATIVE_FOUND)
         SHADERS ${TARGET_GLSL}
         TEMPLATES ${TARGET_IN}
         FOLDER "NodeKits")
+
+    # Headers for vcpkg-only deps (async++, glm, …) are not under CESIUM_NATIVE_DIR/include after `cmake --install`.
+    if(CESIUM_NATIVE_VCPKG_INSTALLED AND EXISTS "${CESIUM_NATIVE_VCPKG_INSTALLED}/include")
+        target_include_directories(${LIB_NAME} BEFORE PRIVATE "${CESIUM_NATIVE_VCPKG_INSTALLED}/include")
+    endif()
 
     target_link_libraries(${LIB_NAME} PRIVATE OE::CESIUM_NATIVE)
 

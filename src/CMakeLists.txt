@@ -23,10 +23,8 @@ if(OSGEARTH_BUILD_PROCEDURAL_NODEKIT)
     list(APPEND OSGEARTH_COMPONENTS osgEarthProcedural)
 endif()
 
-if(OSGEARTH_BUILD_CESIUM_NODEKIT)
-    add_subdirectory(osgEarthCesium)
-    list(APPEND OSGEARTH_COMPONENTS osgEarthCesium)
-endif()
+add_subdirectory(osgEarthCesium)
+list(APPEND OSGEARTH_COMPONENTS osgEarthCesium)
 
 if(OSGEARTH_BUILD_TRITON_NODEKIT)
     add_subdirectory(osgEarthTriton)

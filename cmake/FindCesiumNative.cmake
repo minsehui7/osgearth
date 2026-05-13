@@ -15,6 +15,10 @@
 #   target_link_libraries(TARGET my_target PRIVATE OE::CESIUM_NATIVE)
 #
 set(CESIUM_NATIVE_DIR "" CACHE PATH "Root directory of cesium-native distribution")
+# cesium-native `cmake --install` typically copies only Cesium*.lib into CESIUM_NATIVE_DIR/lib.
+# MSVC+vcpkg static deps (async++, absl, …) remain under the cesium-native build tree — set this to
+# .../cesium-native/build/vcpkg_installed/x64-windows-static-md (or matching triplet).
+set(CESIUM_NATIVE_VCPKG_INSTALLED "" CACHE PATH "Optional vcpkg_installed root from the cesium-native build (parent of lib/ and debug/lib/)")
 
 unset(CESIUM_NATIVE_FOUND)
 
@@ -37,26 +41,44 @@ macro(find_cesium_library MY_LIBRARY_VAR MY_LIBRARY_NAME)
     unset(${MY_LIBRARY_VAR}_LIBRARY_RELEASE CACHE)
 
     if (NOT CESIUM_ANY_LIBRARY_MISSING)
+        # Release 링크는 절대 vcpkg debug/lib 를 먼저 잡으면 안 됨(동일 파일명·Debug CRT → __calloc_dbg 등).
+        set(_CESIUM_RELEASE_LIB_PATHS
+            "${CESIUM_NATIVE_DIR}/lib"
+            "$ENV{CESIUM_NATIVE_DIR}")
+        if(CESIUM_NATIVE_VCPKG_INSTALLED)
+            list(APPEND _CESIUM_RELEASE_LIB_PATHS "${CESIUM_NATIVE_VCPKG_INSTALLED}/lib")
+        endif()
+        set(_CESIUM_DEBUG_LIB_PATHS
+            "${CESIUM_NATIVE_DIR}/lib"
+            "$ENV{CESIUM_NATIVE_DIR}")
+        if(CESIUM_NATIVE_VCPKG_INSTALLED)
+            list(APPEND _CESIUM_DEBUG_LIB_PATHS
+                "${CESIUM_NATIVE_VCPKG_INSTALLED}/debug/lib"
+                "${CESIUM_NATIVE_VCPKG_INSTALLED}/lib")
+        endif()
+
         find_library(${MY_LIBRARY_VAR}_LIBRARY_DEBUG
             NAMES
                 ${MY_LIBRARY_NAME}d
             PATHS
-                ${CESIUM_NATIVE_DIR}/lib
-                $ENV{CESIUM_NATIVE_DIR}
-                PATH_SUFFIXES lib64 lib
+                ${_CESIUM_DEBUG_LIB_PATHS}
+            PATH_SUFFIXES lib64 lib
             NO_DEFAULT_PATH )
 
         find_library(${MY_LIBRARY_VAR}_LIBRARY_RELEASE
              NAMES
                  ${MY_LIBRARY_NAME}
              PATHS
-                 ${CESIUM_NATIVE_DIR}/lib
-                 $ENV{CESIUM_NATIVE_DIR}
-                 PATH_SUFFIXES lib64 lib
+                 ${_CESIUM_RELEASE_LIB_PATHS}
+             PATH_SUFFIXES lib64 lib
              NO_DEFAULT_PATH )
 
         set(MY_DEBUG_LIBRARY "${${MY_LIBRARY_VAR}_LIBRARY_DEBUG}")
-        set(MY_RELEASE_LIBRARY "${${MY_LIBRARY_VAR}_LIBRARY_RELEASE}")       
+        set(MY_RELEASE_LIBRARY "${${MY_LIBRARY_VAR}_LIBRARY_RELEASE}")
+        # MSVC static vcpkg deps often use the same .lib name for Debug/Release (no "d" suffix).
+        if(MY_RELEASE_LIBRARY AND NOT MY_DEBUG_LIBRARY)
+            set(MY_DEBUG_LIBRARY "${MY_RELEASE_LIBRARY}")
+        endif()
         
         if(MY_DEBUG_LIBRARY OR MY_RELEASE_LIBRARY)
             # name of the import for this component:
