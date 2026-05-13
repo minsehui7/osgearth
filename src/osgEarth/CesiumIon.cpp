@@ -65,7 +65,7 @@ CesiumIonResource::open(const URI& server,
     // Configure the accept header
     std::stringstream buf2;
     //buf2 << "*/*;access_token=" << _resourceToken;
-    buf2 << "Bearer " << _resourceToken << std::endl;
+    buf2 << "Bearer " << _resourceToken;
     _acceptHeader = buf2.str();
 
     if (doc.isMember("externalType"))
@@ -402,6 +402,28 @@ CesiumIonTerrainMeshLayer::closeImplementation()
 
 namespace
 {
+    std::atomic<bool> s_logTerrainHttpResponses{ false };
+
+    const char* readResultCodeName(ReadResult::Code code)
+    {
+        switch (code)
+        {
+        case ReadResult::RESULT_OK: return "OK";
+        case ReadResult::RESULT_CANCELED: return "CANCELED";
+        case ReadResult::RESULT_UNAUTHORIZED: return "UNAUTHORIZED";
+        case ReadResult::RESULT_NOT_FOUND: return "NOT_FOUND";
+        case ReadResult::RESULT_EXPIRED: return "EXPIRED";
+        case ReadResult::RESULT_SERVER_ERROR: return "SERVER_ERROR";
+        case ReadResult::RESULT_TIMEOUT: return "TIMEOUT";
+        case ReadResult::RESULT_NO_READER: return "NO_READER";
+        case ReadResult::RESULT_READER_ERROR: return "READER_ERROR";
+        case ReadResult::RESULT_UNKNOWN_ERROR: return "UNKNOWN_ERROR";
+        case ReadResult::RESULT_NOT_IMPLEMENTED: return "NOT_IMPLEMENTED";
+        case ReadResult::RESULT_NOT_MODIFIED: return "NOT_MODIFIED";
+        default: return "CLIENT_ERROR";
+        }
+    }
+
     struct QuantizedMeshHeader
     {
         // The center of the tile in Earth-centered Fixed coordinates.
@@ -628,6 +650,25 @@ namespace
             }
             const ReadResult result = tileURI.readString(readOptions, progress);
             lastCode = result.code();
+            if (s_logTerrainHttpResponses.load(std::memory_order_relaxed))
+            {
+                unsigned logX = 0u;
+                unsigned logY = 0u;
+                key.getTileXY(logX, logY);
+                std::stringstream log;
+                log << LC << "Terrain HTTP "
+                    << (result.succeeded() ? "OK" : "FAIL")
+                    << " code=" << readResultCodeName(result.code())
+                    << " attempt=" << (attempt + 1u) << "/" << maxAttempts
+                    << " lod=" << key.getLevelOfDetail()
+                    << " x=" << logX
+                    << " y=" << logY
+                    << " bytes=" << result.getString().size()
+                    << " url=" << tileURI.full();
+                if (!result.errorDetail().empty())
+                    log << " detail=" << result.errorDetail();
+                OE_NOTICE << log.str() << std::endl;
+            }
             if (result.succeeded())
             {
                 if (out_code) *out_code = ReadResult::RESULT_OK;
@@ -734,6 +775,16 @@ namespace
         out.localToWorld = childL2W;
         return out;
     }
+}
+
+void CesiumIonTerrainMeshLayer::setLogTerrainHttpResponses(bool value)
+{
+    s_logTerrainHttpResponses.store(value, std::memory_order_relaxed);
+}
+
+bool CesiumIonTerrainMeshLayer::getLogTerrainHttpResponses()
+{
+    return s_logTerrainHttpResponses.load(std::memory_order_relaxed);
 }
 
 TileMesh CesiumIonTerrainMeshLayer::createTileImplementation(

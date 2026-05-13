@@ -12,6 +12,8 @@
 #include <osgEarth/ThreeDTilesLayer>
 #include <osgEarth/URI>
 
+#include <atomic>
+
 
 namespace osgEarth
 {
@@ -133,6 +135,10 @@ namespace osgEarth
         //! Default: false (기존 동작 — 부모 워크로 코어스 데이터 제공).
         void setFastFailOnServerError(bool value) { _fastFailOnServerError = value; }
         bool getFastFailOnServerError() const { return _fastFailOnServerError; }
+
+        //! Logs quantized-mesh terrain tile request URLs and response codes.
+        static void setLogTerrainHttpResponses(bool value);
+        static bool getLogTerrainHttpResponses();
 
     public: // Layer
 

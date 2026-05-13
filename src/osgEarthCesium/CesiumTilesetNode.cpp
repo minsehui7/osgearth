@@ -5,6 +5,7 @@
 #include "CesiumTilesetNode"
 #include "Context"
 #include "CesiumIon"
+#include "PrepareRenderResources"
 #include "Settings"
 
 #include <osgEarth/Notify>
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 
 using namespace osgEarth::Cesium;
 
@@ -123,6 +125,93 @@ int CesiumTilesetNode::getMinimumRenderableLevel() const
 void CesiumTilesetNode::setMinimumRenderableLevel(int level)
 {
     _minimumRenderableLevel = level;
+}
+
+unsigned int CesiumTilesetNode::reclampLoadedTiles(const TilesetRenderStyleOptions& renderStyle)
+{
+    if (!_tileset || !renderStyle.clampToGround)
+    {
+        return 0u;
+    }
+
+    unsigned int clampedGeometryCount = 0u;
+    Cesium3DTilesSelection::Tileset* tileset = (Cesium3DTilesSelection::Tileset*)_tileset;
+    tileset->forEachLoadedTile([&](const Cesium3DTilesSelection::Tile& tile) {
+        if (!tile.getContent().isRenderContent())
+        {
+            return;
+        }
+
+        const auto* renderContent = tile.getContent().getRenderContent();
+        if (!renderContent)
+        {
+            return;
+        }
+
+        MainThreadResult* result =
+            reinterpret_cast<MainThreadResult*>(renderContent->getRenderResources());
+        if (result && result->node.valid())
+        {
+            clampedGeometryCount += reclampTerrain(result->node.get(), renderStyle);
+        }
+    });
+
+    if (clampedGeometryCount > 0u)
+    {
+        dirtyBound();
+    }
+    return clampedGeometryCount;
+}
+
+std::shared_ptr<TilesetTerrainClampTask>
+CesiumTilesetNode::snapshotLoadedTilesTerrainClampTask(const TilesetRenderStyleOptions& renderStyle)
+{
+    auto mergedTask = std::make_shared<TilesetTerrainClampTask>();
+    mergedTask->renderStyle = renderStyle;
+    if (!_tileset || !renderStyle.clampToGround)
+    {
+        return mergedTask;
+    }
+
+    Cesium3DTilesSelection::Tileset* tileset = (Cesium3DTilesSelection::Tileset*)_tileset;
+    tileset->forEachLoadedTile([&](const Cesium3DTilesSelection::Tile& tile) {
+        if (!tile.getContent().isRenderContent())
+        {
+            return;
+        }
+
+        const auto* renderContent = tile.getContent().getRenderContent();
+        if (!renderContent)
+        {
+            return;
+        }
+
+        MainThreadResult* result =
+            reinterpret_cast<MainThreadResult*>(renderContent->getRenderResources());
+        if (result && result->node.valid())
+        {
+            auto task = snapshotTerrainClampTask(result->node.get(), renderStyle);
+            if (task && !task->geometries.empty())
+            {
+                mergedTask->geometries.insert(
+                    mergedTask->geometries.end(),
+                    std::make_move_iterator(task->geometries.begin()),
+                    std::make_move_iterator(task->geometries.end()));
+            }
+        }
+    });
+    return mergedTask;
+}
+
+unsigned int
+CesiumTilesetNode::applyLoadedTilesTerrainClampTask(TilesetTerrainClampTask& task)
+{
+    const unsigned int clampedGeometryCount = applyResolvedTerrainClampTask(task);
+    if (clampedGeometryCount > 0u)
+    {
+        dirtyBound();
+    }
+    return clampedGeometryCount;
 }
 
 void

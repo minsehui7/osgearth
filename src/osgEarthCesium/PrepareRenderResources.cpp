@@ -8,13 +8,22 @@
 
 #include <osg/BlendFunc>
 #include <osg/Texture2D>
+#include <osg/Geode>
 #include <osg/Geometry>
+#include <osg/LineWidth>
+#include <osg/NodeVisitor>
 #include <osg/PolygonOffset>
+#include <osg/Program>
+#include <osg/Shader>
+#include <osgEarth/ElevationQuery>
 #include <osgEarth/ImageUtils>
 #include <osgEarth/Lighting>
 #include <osgEarth/LineDrawable>
+#include <osgEarth/Map>
 #include <osgEarth/Notify>
 #include <osgEarth/Registry>
+#include <osgEarth/SpatialReference>
+#include <osgEarth/VirtualProgram>
 #include <osg/MatrixTransform>
 #include <glm/gtc/type_ptr.hpp>
 
@@ -63,6 +72,94 @@ namespace
         double up[3]{};
     };
 
+    struct TerrainSampleKey
+    {
+        std::int64_t lon = 0;
+        std::int64_t lat = 0;
+
+        bool operator==(const TerrainSampleKey& rhs) const noexcept
+        {
+            return lon == rhs.lon && lat == rhs.lat;
+        }
+    };
+
+    struct TerrainSampleKeyHash
+    {
+        std::size_t operator()(const TerrainSampleKey& key) const noexcept
+        {
+            const std::uint64_t lon = static_cast<std::uint64_t>(key.lon);
+            const std::uint64_t lat = static_cast<std::uint64_t>(key.lat);
+            return static_cast<std::size_t>(lon ^ (lat + 0x9e3779b97f4a7c15ull + (lon << 6u) + (lon >> 2u)));
+        }
+    };
+
+    struct TerrainSample
+    {
+        double lonRad = 0.0;
+        double latRad = 0.0;
+        osg::Vec3d queryPoint;
+    };
+
+    const char* kInlineEdgeDrawableName = "h3dt_inline_edges";
+    const char* kInlineMeshDrawableName = "h3dt_inline_mesh";
+
+    bool isInlineEdgeDrawable(const osg::Drawable* drawable)
+    {
+        return drawable && drawable->getName() == kInlineEdgeDrawableName;
+    }
+
+    bool isInlineMeshDrawable(const osg::Drawable* drawable)
+    {
+        return drawable && drawable->getName() == kInlineMeshDrawableName;
+    }
+
+    void disableVirtualProgramInheritance(osg::StateSet* stateSet)
+    {
+        if (!stateSet)
+        {
+            return;
+        }
+        osgEarth::VirtualProgram::getOrCreate(stateSet)->setInheritShaders(false);
+    }
+
+    class VirtualProgramIsolationVisitor : public osg::NodeVisitor
+    {
+    public:
+        VirtualProgramIsolationVisitor() :
+            osg::NodeVisitor(osg::NodeVisitor::TRAVERSE_ALL_CHILDREN)
+        {
+        }
+
+        void apply(osg::Node& node) override
+        {
+            if (dynamic_cast<osgEarth::LineDrawable*>(&node) != nullptr)
+            {
+                return;
+            }
+            disableVirtualProgramInheritance(node.getOrCreateStateSet());
+            traverse(node);
+        }
+
+        void apply(osg::Geode& geode) override
+        {
+            disableVirtualProgramInheritance(geode.getOrCreateStateSet());
+            for (unsigned int i = 0u; i < geode.getNumDrawables(); ++i)
+            {
+                osg::Drawable* drawable = geode.getDrawable(i);
+                if (drawable)
+                {
+                    if (dynamic_cast<osgEarth::LineDrawable*>(drawable) == nullptr &&
+                        !isInlineEdgeDrawable(drawable) &&
+                        !isInlineMeshDrawable(drawable))
+                    {
+                        disableVirtualProgramInheritance(drawable->getOrCreateStateSet());
+                    }
+                }
+            }
+            traverse(geode);
+        }
+    };
+
     std::uint64_t edgeKey(unsigned int a, unsigned int b)
     {
         const unsigned int lo = std::min(a, b);
@@ -86,6 +183,115 @@ namespace
             use.b = std::max(a, b);
         }
         ++use.count;
+    }
+
+    osg::Program* createInlineEdgeProgram()
+    {
+        const char* vertexShader = R"(
+            #version 330
+
+            uniform mat4 osg_ModelViewProjectionMatrix;
+            in vec4 osg_Vertex;
+
+            void main()
+            {
+                gl_Position = osg_ModelViewProjectionMatrix * osg_Vertex;
+            }
+        )";
+
+        const char* geometryShader = R"(
+            #version 330
+
+            layout(lines) in;
+            layout(triangle_strip, max_vertices = 4) out;
+
+            uniform float oe_h3dt_edge_width;
+            uniform vec2 oe_h3dt_viewport_size;
+
+            void emitOffsetVertex(vec4 clipPosition, vec2 offset)
+            {
+                gl_Position = clipPosition;
+                gl_Position.xy += offset * clipPosition.w;
+                EmitVertex();
+            }
+
+            void main()
+            {
+                vec4 p0 = gl_in[0].gl_Position;
+                vec4 p1 = gl_in[1].gl_Position;
+                vec2 ndc0 = p0.xy / p0.w;
+                vec2 ndc1 = p1.xy / p1.w;
+                vec2 dir = ndc1 - ndc0;
+                if (dot(dir, dir) < 1e-12)
+                {
+                    return;
+                }
+
+                vec2 normal = normalize(vec2(-dir.y, dir.x));
+                vec2 viewportSize = max(oe_h3dt_viewport_size, vec2(1.0));
+                vec2 offset = normal * max(oe_h3dt_edge_width, 1.0) / viewportSize;
+
+                emitOffsetVertex(p0, offset);
+                emitOffsetVertex(p0, -offset);
+                emitOffsetVertex(p1, offset);
+                emitOffsetVertex(p1, -offset);
+                EndPrimitive();
+            }
+        )";
+
+        const char* fragmentShader = R"(
+            #version 330
+
+            uniform vec4 oe_h3dt_edge_color;
+            layout(location = 0) out vec4 fragColor;
+
+            void main()
+            {
+                fragColor = oe_h3dt_edge_color;
+            }
+        )";
+
+        osg::Program* program = new osg::Program();
+        program->setName("h3dt_inline_edge_program");
+        program->addShader(new osg::Shader(osg::Shader::VERTEX, vertexShader));
+        program->addShader(new osg::Shader(osg::Shader::GEOMETRY, geometryShader));
+        program->addShader(new osg::Shader(osg::Shader::FRAGMENT, fragmentShader));
+        program->addBindFragDataLocation("fragColor", 0);
+        return program;
+    }
+
+    osg::Program* createInlineMeshProgram()
+    {
+        const char* vertexShader = R"(
+            #version 330
+
+            uniform mat4 osg_ModelViewProjectionMatrix;
+            in vec4 osg_Vertex;
+
+            void main()
+            {
+                gl_Position = osg_ModelViewProjectionMatrix * osg_Vertex;
+            }
+        )";
+
+        const char* fragmentShader = R"(
+            #version 330
+
+            uniform vec4 oe_h3dt_mesh_color;
+            layout(location = 0) out vec4 fragColor;
+
+            void main()
+            {
+                fragColor = oe_h3dt_mesh_color;
+            }
+        )";
+
+        osg::Program* program = new osg::Program();
+        program->setName("h3dt_inline_mesh_program");
+        program->addShader(new osg::Shader(osg::Shader::VERTEX, vertexShader));
+        program->addShader(new osg::Shader(osg::Shader::FRAGMENT, fragmentShader));
+        program->addBindFragDataLocation("fragColor", 0);
+        return program;
     }
 
     template<typename IndexArrayT>
@@ -323,6 +529,390 @@ namespace
         *lonRad = unwrapLonNear(*lonRad, (frame.bounds.west + frame.bounds.east) * 0.5);
         return std::isfinite(*lonRad) && std::isfinite(*latRad);
     }
+
+    bool gltfPointToLonLatHeight(
+        const osg::Vec3& p,
+        const TileLocalFrame& frame,
+        double* lonRad,
+        double* latRad,
+        double* heightM)
+    {
+        if (!frame.valid || !lonRad || !latRad || !heightM)
+        {
+            return false;
+        }
+        const double eastM = static_cast<double>(p.x());
+        const double upM = static_cast<double>(p.y());
+        const double northM = -static_cast<double>(p.z());
+        const double ecefX = frame.origin[0] + eastM * frame.east[0] +
+            northM * frame.north[0] + upM * frame.up[0];
+        const double ecefY = frame.origin[1] + eastM * frame.east[1] +
+            northM * frame.north[1] + upM * frame.up[1];
+        const double ecefZ = frame.origin[2] + eastM * frame.east[2] +
+            northM * frame.north[2] + upM * frame.up[2];
+        ecefToGeodeticRadHeight(ecefX, ecefY, ecefZ, lonRad, latRad, heightM);
+        *lonRad = unwrapLonNear(*lonRad, (frame.bounds.west + frame.bounds.east) * 0.5);
+        return std::isfinite(*lonRad) && std::isfinite(*latRad) && std::isfinite(*heightM);
+    }
+
+    bool lonLatHeightToGltfPoint(
+        double lonRad,
+        double latRad,
+        double heightM,
+        const TileLocalFrame& frame,
+        osg::Vec3* out)
+    {
+        if (!frame.valid || !out ||
+            !std::isfinite(lonRad) || !std::isfinite(latRad) || !std::isfinite(heightM))
+        {
+            return false;
+        }
+
+        double ecef[3]{};
+        geodeticRadHeightToEcef(lonRad, latRad, heightM, &ecef[0], &ecef[1], &ecef[2]);
+        const double dx = ecef[0] - frame.origin[0];
+        const double dy = ecef[1] - frame.origin[1];
+        const double dz = ecef[2] - frame.origin[2];
+        const double eastM = dx * frame.east[0] + dy * frame.east[1] + dz * frame.east[2];
+        const double northM = dx * frame.north[0] + dy * frame.north[1] + dz * frame.north[2];
+        const double upM = dx * frame.up[0] + dy * frame.up[1] + dz * frame.up[2];
+        if (!std::isfinite(eastM) || !std::isfinite(northM) || !std::isfinite(upM))
+        {
+            return false;
+        }
+        out->set(
+            static_cast<float>(eastM),
+            static_cast<float>(upM),
+            static_cast<float>(-northM));
+        return true;
+    }
+
+    bool terrainHeightSampleValid(double z)
+    {
+        return std::isfinite(z) && z > -100000.0;
+    }
+
+    bool applyTerrainClampToGeometry(
+        osg::Geometry* geom,
+        const TilesetRenderStyleOptions* renderStyle,
+        const osg::Matrixd& localToEcef)
+    {
+        if (!geom || !renderStyle || !renderStyle->clampToGround ||
+            !renderStyle->clampMap)
+        {
+            return false;
+        }
+
+        const osg::Vec3Array* sourcePositions = dynamic_cast<const osg::Vec3Array*>(geom->getVertexArray());
+        if (!sourcePositions || sourcePositions->empty())
+        {
+            return false;
+        }
+
+        osg::Matrixd ecefToLocal;
+        if (!ecefToLocal.invert(localToEcef))
+        {
+            return false;
+        }
+
+        osg::ref_ptr<const osgEarth::SpatialReference> wgs84 = osgEarth::SpatialReference::get("wgs84");
+        if (!wgs84.valid())
+        {
+            return false;
+        }
+
+        constexpr double kQuantScale = 1.0e6;
+        const unsigned int maxSamples = std::max(renderStyle->clampMaxTerrainSamples, 1u);
+
+        osg::ref_ptr<osg::Vec3Array> clampedPositions = new osg::Vec3Array(*sourcePositions);
+        std::vector<std::size_t> vertexToSample(clampedPositions->size(), std::numeric_limits<std::size_t>::max());
+        std::vector<TerrainSample> samples;
+        samples.reserve(std::min<std::size_t>(clampedPositions->size(), maxSamples));
+        std::unordered_map<TerrainSampleKey, std::size_t, TerrainSampleKeyHash> sampleIndexByKey;
+        sampleIndexByKey.reserve(samples.capacity());
+
+        for (std::size_t i = 0; i < clampedPositions->size(); ++i)
+        {
+            const osg::Vec3d ecef =
+                osg::Vec3d((*clampedPositions)[i].x(), (*clampedPositions)[i].y(), (*clampedPositions)[i].z()) *
+                localToEcef;
+            osg::Vec3d llaDeg;
+            if (!wgs84->transformFromWorld(ecef, llaDeg) ||
+                !std::isfinite(llaDeg.x()) ||
+                !std::isfinite(llaDeg.y()) ||
+                !std::isfinite(llaDeg.z()))
+            {
+                continue;
+            }
+
+            const TerrainSampleKey key{
+                static_cast<std::int64_t>(std::llround(llaDeg.x() * kQuantScale)),
+                static_cast<std::int64_t>(std::llround(llaDeg.y() * kQuantScale))};
+            const auto found = sampleIndexByKey.find(key);
+            if (found != sampleIndexByKey.end())
+            {
+                vertexToSample[i] = found->second;
+                continue;
+            }
+
+            if (samples.size() >= maxSamples)
+            {
+                OE_WARN << "[PrepareRenderResources] Skipping 3D Tiles terrain clamp: sample budget exceeded ("
+                    << maxSamples << ")\n";
+                return false;
+            }
+
+            const std::size_t sampleIndex = samples.size();
+            TerrainSample sample;
+            sample.queryPoint.set(llaDeg.x(), llaDeg.y(), 0.0);
+            samples.push_back(sample);
+            sampleIndexByKey.emplace(key, sampleIndex);
+            vertexToSample[i] = sampleIndex;
+        }
+
+        if (samples.empty())
+        {
+            return false;
+        }
+
+        osgEarth::Util::ElevationQuery query(renderStyle->clampMap);
+        std::vector<osg::Vec3d> queryPoints;
+        queryPoints.reserve(samples.size());
+        for (const TerrainSample& sample : samples)
+        {
+            queryPoints.push_back(sample.queryPoint);
+        }
+
+        const double desiredResolution =
+            renderStyle->clampSampleResolutionM > 0.0 ? renderStyle->clampSampleResolutionM : 0.0;
+        constexpr std::size_t kChunkSize = 2048u;
+        for (std::size_t offset = 0; offset < queryPoints.size(); offset += kChunkSize)
+        {
+            const std::size_t count = std::min(kChunkSize, queryPoints.size() - offset);
+            std::vector<osg::Vec3d> chunk(
+                queryPoints.begin() + static_cast<std::ptrdiff_t>(offset),
+                queryPoints.begin() + static_cast<std::ptrdiff_t>(offset + count));
+            if (!query.getElevations(chunk, wgs84.get(), true, desiredResolution))
+            {
+                return false;
+            }
+            for (std::size_t i = 0; i < chunk.size(); ++i)
+            {
+                samples[offset + i].queryPoint.z() = chunk[i].z();
+            }
+        }
+
+        bool wroteAny = false;
+        for (std::size_t i = 0; i < clampedPositions->size(); ++i)
+        {
+            const std::size_t sampleIndex = vertexToSample[i];
+            if (sampleIndex >= samples.size())
+            {
+                continue;
+            }
+            const TerrainSample& sample = samples[sampleIndex];
+            const double terrainHeightM = sample.queryPoint.z();
+            if (!terrainHeightSampleValid(terrainHeightM))
+            {
+                continue;
+            }
+
+            osgEarth::GeoPoint clampedPoint(
+                wgs84.get(),
+                sample.queryPoint.x(),
+                sample.queryPoint.y(),
+                terrainHeightM,
+                osgEarth::ALTMODE_ABSOLUTE);
+            osg::Vec3d clampedEcef;
+            if (!clampedPoint.toWorld(clampedEcef))
+                continue;
+
+            const osg::Vec3d local = clampedEcef * ecefToLocal;
+            if (!std::isfinite(local.x()) || !std::isfinite(local.y()) || !std::isfinite(local.z()))
+                continue;
+
+            (*clampedPositions)[i].set(
+                static_cast<float>(local.x()),
+                static_cast<float>(local.y()),
+                static_cast<float>(local.z()));
+            wroteAny = true;
+        }
+
+        if (wroteAny)
+        {
+            geom->setVertexArray(clampedPositions.get());
+            geom->dirtyBound();
+        }
+        return wroteAny;
+    }
+
+    class TerrainClampVisitor : public osg::NodeVisitor
+    {
+    public:
+        TerrainClampVisitor(const TilesetRenderStyleOptions* renderStyle) :
+            osg::NodeVisitor(osg::NodeVisitor::TRAVERSE_ALL_CHILDREN),
+            _renderStyle(renderStyle)
+        {
+            _matrixStack.push_back(osg::Matrixd::identity());
+        }
+
+        void apply(osg::MatrixTransform& transform) override
+        {
+            osg::Matrixd localToEcef = currentMatrix();
+            transform.computeLocalToWorldMatrix(localToEcef, this);
+            _matrixStack.push_back(localToEcef);
+            traverse(transform);
+            _matrixStack.pop_back();
+        }
+
+        void apply(osg::Geometry& geometry) override
+        {
+            if (applyTerrainClampToGeometry(&geometry, _renderStyle, currentMatrix()))
+            {
+                ++_clampedGeometryCount;
+            }
+            traverse(geometry);
+        }
+
+        unsigned int clampedGeometryCount() const
+        {
+            return _clampedGeometryCount;
+        }
+
+    private:
+        const osg::Matrixd& currentMatrix() const
+        {
+            return _matrixStack.back();
+        }
+
+        const TilesetRenderStyleOptions* _renderStyle = nullptr;
+        std::vector<osg::Matrixd> _matrixStack;
+        unsigned int _clampedGeometryCount = 0u;
+    };
+
+    unsigned int applyTerrainClampToSubgraph(
+        osg::Node* node,
+        const TilesetRenderStyleOptions* renderStyle)
+    {
+        if (!node || !renderStyle || !renderStyle->clampToGround)
+        {
+            return 0u;
+        }
+
+        TerrainClampVisitor visitor(renderStyle);
+        node->accept(visitor);
+        return visitor.clampedGeometryCount();
+    }
+
+    bool snapshotTerrainClampGeometry(
+        osg::Geometry* geom,
+        const TilesetRenderStyleOptions& renderStyle,
+        const osg::Matrixd& localToEcef,
+        TilesetTerrainClampGeometry& out)
+    {
+        if (!geom || !renderStyle.clampToGround || !renderStyle.clampMap)
+            return false;
+
+        osg::Matrixd ecefToLocal;
+        if (!ecefToLocal.invert(localToEcef))
+            return false;
+
+        osg::ref_ptr<const osgEarth::SpatialReference> wgs84 = osgEarth::SpatialReference::get("wgs84");
+        if (!wgs84.valid())
+            return false;
+
+        const osg::Vec3Array* sourcePositions = dynamic_cast<const osg::Vec3Array*>(geom->getVertexArray());
+        if (!sourcePositions || sourcePositions->empty())
+            return false;
+
+        constexpr double kQuantScale = 1.0e6;
+        const unsigned int maxSamples = std::max(renderStyle.clampMaxTerrainSamples, 1u);
+        osg::ref_ptr<osg::Vec3Array> positionsCopy = new osg::Vec3Array(*sourcePositions);
+
+        std::vector<std::size_t> vertexToSample(positionsCopy->size(), std::numeric_limits<std::size_t>::max());
+        std::vector<osg::Vec3d> samples;
+        samples.reserve(std::min<std::size_t>(positionsCopy->size(), maxSamples));
+        std::unordered_map<TerrainSampleKey, std::size_t, TerrainSampleKeyHash> sampleIndexByKey;
+        sampleIndexByKey.reserve(samples.capacity());
+
+        for (std::size_t i = 0; i < positionsCopy->size(); ++i)
+        {
+            const osg::Vec3d ecef =
+                osg::Vec3d((*positionsCopy)[i].x(), (*positionsCopy)[i].y(), (*positionsCopy)[i].z()) *
+                localToEcef;
+            osg::Vec3d llaDeg;
+            if (!wgs84->transformFromWorld(ecef, llaDeg) ||
+                !std::isfinite(llaDeg.x()) ||
+                !std::isfinite(llaDeg.y()) ||
+                !std::isfinite(llaDeg.z()))
+            {
+                continue;
+            }
+
+            const TerrainSampleKey key{
+                static_cast<std::int64_t>(std::llround(llaDeg.x() * kQuantScale)),
+                static_cast<std::int64_t>(std::llround(llaDeg.y() * kQuantScale))};
+            const auto found = sampleIndexByKey.find(key);
+            if (found != sampleIndexByKey.end())
+            {
+                vertexToSample[i] = found->second;
+                continue;
+            }
+
+            if (samples.size() >= maxSamples)
+                return false;
+
+            const std::size_t sampleIndex = samples.size();
+            samples.emplace_back(llaDeg.x(), llaDeg.y(), 0.0);
+            sampleIndexByKey.emplace(key, sampleIndex);
+            vertexToSample[i] = sampleIndex;
+        }
+
+        if (samples.empty())
+            return false;
+
+        out.geometry = geom;
+        out.sourcePositions = positionsCopy.get();
+        out.ecefToLocal = ecefToLocal;
+        out.vertexToSample = std::move(vertexToSample);
+        out.samplesLonLatHeight = std::move(samples);
+        out.resolved = false;
+        return true;
+    }
+
+    class TerrainClampSnapshotVisitor : public osg::NodeVisitor
+    {
+    public:
+        TerrainClampSnapshotVisitor(const TilesetRenderStyleOptions& renderStyle, TilesetTerrainClampTask& task) :
+            osg::NodeVisitor(osg::NodeVisitor::TRAVERSE_ALL_CHILDREN),
+            _renderStyle(renderStyle),
+            _task(task)
+        {
+            _matrixStack.push_back(osg::Matrixd::identity());
+        }
+
+        void apply(osg::MatrixTransform& transform) override
+        {
+            osg::Matrixd localToEcef = _matrixStack.back();
+            transform.computeLocalToWorldMatrix(localToEcef, this);
+            _matrixStack.push_back(localToEcef);
+            traverse(transform);
+            _matrixStack.pop_back();
+        }
+
+        void apply(osg::Geometry& geometry) override
+        {
+            TilesetTerrainClampGeometry snapshot;
+            if (snapshotTerrainClampGeometry(&geometry, _renderStyle, _matrixStack.back(), snapshot))
+                _task.geometries.push_back(std::move(snapshot));
+            traverse(geometry);
+        }
+
+    private:
+        const TilesetRenderStyleOptions& _renderStyle;
+        TilesetTerrainClampTask& _task;
+        std::vector<osg::Matrixd> _matrixStack;
+    };
 
     bool isTileGridEdge(
         const osg::Vec3& a,
@@ -621,7 +1211,10 @@ namespace {
             }
 
             osgEarth::Registry::shaderGenerator().run(root);
+            VirtualProgramIsolationVisitor isolateVirtualPrograms;
+            root->accept(isolateVirtualPrograms);
             osg::Group* container = new osg::Group;
+            disableVirtualProgramInheritance(container->getOrCreateStateSet());
             container->addChild(root);
             return container;
         }
@@ -735,6 +1328,10 @@ namespace {
 
                 _textures.push_back(osgTexture);
             }
+        }
+
+        void applyTerrainClamp(osg::Geometry* geom)
+        {
         }
 
         osg::Node* createMesh(const CesiumGltf::Mesh& mesh)
@@ -940,9 +1537,9 @@ namespace {
                 return nullptr;
             }
 
-            osg::ref_ptr<osgEarth::LineDrawable> lines = new osgEarth::LineDrawable(GL_LINES);
-            lines->setLineWidth(std::max(_renderStyle->strokeWidth, 1.0f));
-            lines->setColor(_renderStyle->strokeColor);
+            osg::ref_ptr<osg::Geometry> lines = new osg::Geometry();
+            lines->setName(kInlineEdgeDrawableName);
+            osg::ref_ptr<osg::Vec3Array> linePositions = new osg::Vec3Array();
 
             for (const auto& kv : edges)
             {
@@ -957,17 +1554,32 @@ namespace {
                 {
                     continue;
                 }
-                lines->pushVertex(a);
-                lines->pushVertex(b);
+                linePositions->push_back(a);
+                linePositions->push_back(b);
             }
 
-            if (lines->getNumVerts() == 0u)
+            if (linePositions->empty())
             {
                 return nullptr;
             }
 
-            lines->dirty();
+            lines->setVertexArray(linePositions.get());
+            osg::ref_ptr<osg::Vec4Array> lineColors = new osg::Vec4Array();
+            lineColors->push_back(_renderStyle->strokeColor);
+            lines->setColorArray(lineColors.get(), osg::Array::BIND_OVERALL);
+            lines->addPrimitiveSet(new osg::DrawArrays(GL_LINES, 0, linePositions->size()));
+            lines->setUseDisplayList(false);
+            lines->setUseVertexBufferObjects(true);
             osg::StateSet* stateSet = lines->getOrCreateStateSet();
+            stateSet->setAttributeAndModes(
+                createInlineEdgeProgram(),
+                osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
+            stateSet->getOrCreateUniform("oe_h3dt_edge_color", osg::Uniform::FLOAT_VEC4)->set(_renderStyle->strokeColor);
+            stateSet->getOrCreateUniform("oe_h3dt_edge_width", osg::Uniform::FLOAT)->set(std::max(_renderStyle->strokeWidth, 1.0f));
+            stateSet->getOrCreateUniform("oe_h3dt_viewport_size", osg::Uniform::FLOAT_VEC2)->set(osg::Vec2f(1920.0f, 1080.0f));
+            stateSet->setAttributeAndModes(
+                new osg::LineWidth(std::max(_renderStyle->strokeWidth, 1.0f)),
+                osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
             stateSet->setMode(GL_LIGHTING, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE);
             stateSet->setMode(GL_CULL_FACE, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE);
             stateSet->setMode(GL_BLEND, osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
@@ -1004,6 +1616,7 @@ namespace {
             osg::StateSet* stateSet = geom->getOrCreateStateSet();
             if (styleEnabled)
             {
+                geom->setName(kInlineMeshDrawableName);
                 osg::ref_ptr<osg::Vec4Array> colors = new osg::Vec4Array();
                 colors->push_back(_renderStyle->fillColor);
                 geom->setColorArray(colors.get(), osg::Array::BIND_OVERALL);
@@ -1014,6 +1627,10 @@ namespace {
                 stateSet->setAttributeAndModes(
                     styleMaterial,
                     osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
+                stateSet->setAttributeAndModes(
+                    createInlineMeshProgram(),
+                    osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
+                stateSet->getOrCreateUniform("oe_h3dt_mesh_color", osg::Uniform::FLOAT_VEC4)->set(_renderStyle->fillColor);
             }
 
             const bool forceUnlit = styleEnabled && _renderStyle->forceUnlit;
@@ -1075,6 +1692,135 @@ namespace {
 }
 /********/
 
+unsigned int
+osgEarth::Cesium::reclampTerrain(
+    osg::Node* node,
+    const TilesetRenderStyleOptions& renderStyle)
+{
+    return applyTerrainClampToSubgraph(node, &renderStyle);
+}
+
+std::shared_ptr<TilesetTerrainClampTask>
+osgEarth::Cesium::snapshotTerrainClampTask(
+    osg::Node* node,
+    const TilesetRenderStyleOptions& renderStyle)
+{
+    auto task = std::make_shared<TilesetTerrainClampTask>();
+    task->renderStyle = renderStyle;
+    if (!node || !renderStyle.clampToGround || !renderStyle.clampMap)
+        return task;
+
+    TerrainClampSnapshotVisitor visitor(renderStyle, *task);
+    node->accept(visitor);
+    return task;
+}
+
+bool
+osgEarth::Cesium::resolveTerrainClampTask(
+    TilesetTerrainClampTask& task,
+    osgEarth::Map* map,
+    const std::atomic<bool>* cancelFlag)
+{
+    if (!map || task.geometries.empty())
+        return false;
+
+    osg::ref_ptr<const osgEarth::SpatialReference> wgs84 = osgEarth::SpatialReference::get("wgs84");
+    if (!wgs84.valid())
+        return false;
+
+    osgEarth::Util::ElevationQuery query(map);
+    const double desiredResolution =
+        task.renderStyle.clampSampleResolutionM > 0.0 ? task.renderStyle.clampSampleResolutionM : 0.0;
+    constexpr std::size_t kChunkSize = 2048u;
+    bool resolvedAny = false;
+
+    for (TilesetTerrainClampGeometry& geometry : task.geometries)
+    {
+        if (cancelFlag && cancelFlag->load(std::memory_order_acquire))
+            return false;
+        if (geometry.samplesLonLatHeight.empty())
+            continue;
+
+        bool resolvedGeometry = true;
+        for (std::size_t offset = 0; offset < geometry.samplesLonLatHeight.size(); offset += kChunkSize)
+        {
+            if (cancelFlag && cancelFlag->load(std::memory_order_acquire))
+                return false;
+
+            const std::size_t count = std::min(kChunkSize, geometry.samplesLonLatHeight.size() - offset);
+            std::vector<osg::Vec3d> chunk(
+                geometry.samplesLonLatHeight.begin() + static_cast<std::ptrdiff_t>(offset),
+                geometry.samplesLonLatHeight.begin() + static_cast<std::ptrdiff_t>(offset + count));
+            if (!query.getElevations(chunk, wgs84.get(), true, desiredResolution))
+            {
+                resolvedGeometry = false;
+                break;
+            }
+            for (std::size_t i = 0; i < chunk.size(); ++i)
+                geometry.samplesLonLatHeight[offset + i].z() = chunk[i].z();
+        }
+
+        geometry.resolved = resolvedGeometry;
+        resolvedAny = resolvedAny || resolvedGeometry;
+    }
+
+    return resolvedAny;
+}
+
+unsigned int
+osgEarth::Cesium::applyResolvedTerrainClampTask(TilesetTerrainClampTask& task)
+{
+    osg::ref_ptr<const osgEarth::SpatialReference> wgs84 = osgEarth::SpatialReference::get("wgs84");
+    if (!wgs84.valid())
+        return 0u;
+
+    unsigned int clampedGeometryCount = 0u;
+    for (TilesetTerrainClampGeometry& geometry : task.geometries)
+    {
+        if (!geometry.resolved || !geometry.geometry.valid() || !geometry.sourcePositions.valid())
+            continue;
+
+        osg::ref_ptr<osg::Vec3Array> clampedPositions = new osg::Vec3Array(*geometry.sourcePositions);
+        bool wroteAny = false;
+        for (std::size_t i = 0; i < clampedPositions->size(); ++i)
+        {
+            const std::size_t sampleIndex = geometry.vertexToSample[i];
+            if (sampleIndex >= geometry.samplesLonLatHeight.size())
+                continue;
+
+            const osg::Vec3d& sample = geometry.samplesLonLatHeight[sampleIndex];
+            const double terrainHeightM = sample.z();
+            if (!terrainHeightSampleValid(terrainHeightM))
+                continue;
+
+            osgEarth::GeoPoint clampedPoint(
+                wgs84.get(), sample.x(), sample.y(), terrainHeightM, osgEarth::ALTMODE_ABSOLUTE);
+            osg::Vec3d clampedEcef;
+            if (!clampedPoint.toWorld(clampedEcef))
+                continue;
+
+            const osg::Vec3d local = clampedEcef * geometry.ecefToLocal;
+            if (!std::isfinite(local.x()) || !std::isfinite(local.y()) || !std::isfinite(local.z()))
+                continue;
+
+            (*clampedPositions)[i].set(
+                static_cast<float>(local.x()),
+                static_cast<float>(local.y()),
+                static_cast<float>(local.z()));
+            wroteAny = true;
+        }
+
+        if (wroteAny)
+        {
+            geometry.geometry->setVertexArray(clampedPositions.get());
+            geometry.geometry->dirtyBound();
+            ++clampedGeometryCount;
+        }
+    }
+
+    return clampedGeometryCount;
+}
+
 CesiumAsync::Future<Cesium3DTilesSelection::TileLoadResultAndRenderResources>
 PrepareRendererResources::prepareInLoadThread(
     const CesiumAsync::AsyncSystem& asyncSystem,
@@ -1105,6 +1851,11 @@ PrepareRendererResources::prepareInLoadThread(
 
     NodeBuilder builder(model, transform, renderStyle, tileFrame);
     LoadThreadResult* result = new LoadThreadResult;
+    if (renderStyle)
+    {
+        result->renderStyle = *renderStyle;
+        result->hasRenderStyle = true;
+    }
     result->node = builder.build();
     //result->node->setName(tileLoadResult.pCompletedRequest->url());
     return asyncSystem.createResolvedFuture(

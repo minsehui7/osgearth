@@ -127,6 +127,7 @@ ElevationPool::getLOD(double x, double y, WorkingSet* ws)
 {
     double point[2] = { x, y };
     int maxiestMaxLevel = -1;
+    int noDataExtentFallbackLevel = -1;
 
     auto& layers =
         (ws && ws->_elevationLayers.size() > 0) ? ws->_elevationLayers :
@@ -143,10 +144,22 @@ ElevationPool::getLOD(double x, double y, WorkingSet* ws)
                     maxiestMaxLevel = std::max(maxiestMaxLevel, (int)level);
                     return RTREE_KEEP_SEARCHING;
                 });
+
+            // Some runtime elevation adapters, including the quantized-mesh CPU
+            // adapter, do not publish data extents. Treat them as covering their
+            // profile instead of rejecting every point in the batched query path.
+            if (maxiestMaxLevel < 0 && layerItr->getDataExtentsSize() == 0)
+            {
+                unsigned maxLevel = layerItr->getMaxDataLevel();
+                if (_mapData.mapProfile.valid() && layerItr->getProfile())
+                    maxLevel = _mapData.mapProfile->getEquivalentLOD(layerItr->getProfile(), maxLevel);
+                maxLevel = std::min(maxLevel, static_cast<unsigned>(std::numeric_limits<int>::max()));
+                noDataExtentFallbackLevel = std::max(noDataExtentFallbackLevel, static_cast<int>(maxLevel));
+            }
         }
     }
 
-    return maxiestMaxLevel;
+    return maxiestMaxLevel >= 0 ? maxiestMaxLevel : noDataExtentFallbackLevel;
 }
 
 ElevationPool::WorkingSet::WorkingSet(unsigned size) :

@@ -34,6 +34,11 @@ namespace osgEarth { namespace Cesium
         int getMinimumRenderableLevel() const;
         void setMinimumRenderableLevel(int level);
 
+        unsigned int reclampLoadedTiles(const TilesetRenderStyleOptions& renderStyle);
+        std::shared_ptr<TilesetTerrainClampTask> snapshotLoadedTilesTerrainClampTask(
+            const TilesetRenderStyleOptions& renderStyle);
+        unsigned int applyLoadedTilesTerrainClampTask(TilesetTerrainClampTask& task);
+
     private:        
         void* _tileset = nullptr;
         int _minimumRenderableLevel = -1;
