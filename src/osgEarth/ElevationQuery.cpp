@@ -145,12 +145,17 @@ ElevationQuery::getElevations(std::vector<osg::Vec3d>& points,
     {
         // Call ElevationPool::sampleMapCoords directly if there are no terrain patches as it is significantly faster than doing
         // individual getElevationImpl queries
+        //
+        // desiredResolution is in pointsSRS units; pass it through correctly so
+        // ElevationPool::sampleMapCoords can convert to map units internally.
+        const Distance resolution(desiredResolution, pointsSRS->getUnits());
+
         if (pointsSRS != _map->getSRS())
         {
             std::vector< osg::Vec3d > mapPoints = points;
             pointsSRS->transform(mapPoints, _map->getSRS());
             int count = _map->getElevationPool()->sampleMapCoords(
-                mapPoints.begin(), mapPoints.end(), Distance(desiredResolution, _map->getSRS()->getUnits()),
+                mapPoints.begin(), mapPoints.end(), resolution,
                 nullptr, progress);
             for (unsigned int i = 0; i < points.size(); ++i)
             {
@@ -161,7 +166,7 @@ ElevationQuery::getElevations(std::vector<osg::Vec3d>& points,
         else
         {
             return _map->getElevationPool()->sampleMapCoords(
-                points.begin(), points.end(), Distance(desiredResolution, _map->getSRS()->getUnits()),
+                points.begin(), points.end(), resolution,
                 nullptr, progress) > 0;
         }
     }
@@ -200,13 +205,15 @@ ElevationQuery::getElevations(const std::vector<osg::Vec3d>& points,
     {
         // Call ElevationPool::sampleMapCoords directly if there are no terrain patches as it is significantly faster than doing
         // individual getElevationImpl queries
+        const Distance resolution(desiredResolution, pointsSRS->getUnits());
+
         std::vector< osg::Vec3d > mapPoints = points;
         if (pointsSRS != _map->getSRS())
         {
             pointsSRS->transform(mapPoints, _map->getSRS());
         }
         int count = _map->getElevationPool()->sampleMapCoords(
-            mapPoints.begin(), mapPoints.end(), Distance(desiredResolution, _map->getSRS()->getUnits()),
+            mapPoints.begin(), mapPoints.end(), resolution,
             nullptr, progress);
         for (unsigned int i = 0; i < points.size(); ++i)
         {
