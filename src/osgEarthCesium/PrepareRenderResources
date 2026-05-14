@@ -17,12 +17,10 @@
 #include <osg/Node>
 #include <osg/Vec4>
 
-#include <atomic>
 #include <memory>
 #include <vector>
 
 namespace osgEarth {
-    class Map;
 
     namespace Cesium
     {
@@ -43,41 +41,7 @@ namespace osgEarth {
             float polygonOffsetFactor = -1.5f;
             float polygonOffsetUnits = -1.5f;
             bool clampToGround = false;
-            osgEarth::Map* clampMap = nullptr;
-            double clampSampleResolutionM = 0.0;
-            unsigned int clampMaxTerrainSamples = 250000u;
         };
-
-        OSGEARTHCESIUM_EXPORT unsigned int reclampTerrain(
-            osg::Node* node,
-            const TilesetRenderStyleOptions& renderStyle);
-
-        struct TilesetTerrainClampGeometry
-        {
-            osg::ref_ptr<osg::Geometry> geometry;
-            osg::ref_ptr<osg::Vec3Array> sourcePositions;
-            osg::Matrixd ecefToLocal;
-            std::vector<std::size_t> vertexToSample;
-            std::vector<osg::Vec3d> samplesLonLatHeight;
-            bool resolved = false;
-        };
-
-        struct TilesetTerrainClampTask
-        {
-            TilesetRenderStyleOptions renderStyle;
-            std::vector<TilesetTerrainClampGeometry> geometries;
-        };
-
-        OSGEARTHCESIUM_EXPORT std::shared_ptr<TilesetTerrainClampTask> snapshotTerrainClampTask(
-            osg::Node* node,
-            const TilesetRenderStyleOptions& renderStyle);
-
-        OSGEARTHCESIUM_EXPORT bool resolveTerrainClampTask(
-            TilesetTerrainClampTask& task,
-            osgEarth::Map* map,
-            const std::atomic<bool>* cancelFlag = nullptr);
-
-        OSGEARTHCESIUM_EXPORT unsigned int applyResolvedTerrainClampTask(TilesetTerrainClampTask& task);
 
         class LoadThreadResult
         {

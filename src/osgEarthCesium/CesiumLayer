@@ -70,11 +70,6 @@ namespace osgEarth
             const TilesetRenderStyleOptions& getRenderStyle() const;
             void setRenderStyle(const TilesetRenderStyleOptions& renderStyle);
 
-            //! Re-apply terrain clamping to currently loaded render resources.
-            unsigned int reclampLoadedTiles();
-            std::shared_ptr<TilesetTerrainClampTask> snapshotLoadedTilesTerrainClampTask();
-            unsigned int applyLoadedTilesTerrainClampTask(TilesetTerrainClampTask& task);
-
         public: // Layer
 
             //! Open the layer and return its status

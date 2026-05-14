@@ -213,23 +213,3 @@ CesiumNative3DTilesLayer::setRenderStyle(const TilesetRenderStyleOptions& render
 {
     _renderStyle = renderStyle;
 }
-
-unsigned int
-CesiumNative3DTilesLayer::reclampLoadedTiles()
-{
-    return _tilesetNode.valid() ? _tilesetNode->reclampLoadedTiles(_renderStyle) : 0u;
-}
-
-std::shared_ptr<TilesetTerrainClampTask>
-CesiumNative3DTilesLayer::snapshotLoadedTilesTerrainClampTask()
-{
-    return _tilesetNode.valid() ?
-        _tilesetNode->snapshotLoadedTilesTerrainClampTask(_renderStyle) :
-        std::make_shared<TilesetTerrainClampTask>();
-}
-
-unsigned int
-CesiumNative3DTilesLayer::applyLoadedTilesTerrainClampTask(TilesetTerrainClampTask& task)
-{
-    return _tilesetNode.valid() ? _tilesetNode->applyLoadedTilesTerrainClampTask(task) : 0u;
-}

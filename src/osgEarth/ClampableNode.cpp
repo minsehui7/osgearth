@@ -48,8 +48,11 @@ ClampableNode::traverse(osg::NodeVisitor& nv)
             // Actual bounds of geometry:
             osg::BoundingSphere bs = getBound();
 
-            // First check for simple intersection at the geometry's actual position:
-            bool visible = false; //(cv->isCulled(bs) == false);
+            // For orthographic cameras (2D / top-down mode) the horizon-based
+            // bounding-sphere projection does not apply; assume visible.
+            double _fovy, _ar, _zn, _zf;
+            bool visible = !cv->getProjectionMatrix()->getPerspective(_fovy, _ar, _zn, _zf);
+
             if (!visible)
             {
                 // Failing that, project the geometry to the ellipsoid's surface and

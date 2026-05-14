@@ -14,16 +14,22 @@ uniform mat4 oe_clamp_depthClip2cameraView;
 // along with the associated depth value.
 void oe_getClampedViewVertex(in vec4 vertView, out vec4 out_clampedVertView, out float out_depth)
 {
-    // transform the vertex into the depth texture's clip coordinates.
     vec4 vertDepthClip = oe_clamp_cameraView2depthClip * vertView;
 
-    // sample the depth map
-    out_depth = textureProj( oe_clamp_depthTex, vertDepthClip ).r;
+    vec2 uv = vertDepthClip.xy / vertDepthClip.w;
+    const float margin = 0.005;
+    vec2 safeUV = clamp(uv, vec2(margin), vec2(1.0 - margin));
 
-    // now transform into depth-view space so we can apply the height-above-ground:
-    vec4 clampedVertDepthClip = vec4(vertDepthClip.x, vertDepthClip.y, out_depth, 1.0);
+    // Sample at a clamped UV so the depth is always consistent with the
+    // reconstructed position — prevents the x,y / z mismatch that causes
+    // huge vertical offsets when the vertex projects outside the depth texture.
+    out_depth = texture(oe_clamp_depthTex, safeUV).r;
 
-    // convert back into view space.
+    vec4 clampedVertDepthClip = vec4(
+        safeUV.x * vertDepthClip.w,
+        safeUV.y * vertDepthClip.w,
+        out_depth, 1.0);
+
     out_clampedVertView = oe_clamp_depthClip2cameraView * clampedVertDepthClip;
 }
 

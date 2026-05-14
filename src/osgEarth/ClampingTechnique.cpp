@@ -111,7 +111,7 @@ namespace
 //---------------------------------------------------------------------------
 
 ClampingTechnique::ClampingTechnique() :
-_textureSize( 1024 ),
+_textureSize( 4096 ),
 _engine(0L)
 {
     // disable if GLSL is not supported

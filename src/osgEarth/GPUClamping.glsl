@@ -11,6 +11,7 @@ in float oe_clamp_height;   // vertex attribute
 #endif
 
 out float oe_clamp_alpha;
+out vec2  oe_clamp_screenNDC;
 
 uniform float oe_clamp_altitudeOffset;
 uniform float oe_clamp_horizonDistance2;
@@ -70,7 +71,15 @@ void oe_clamp_clampViewSpaceVertex(inout vec4 vertexView)
 
 void oe_clamp_vertex(inout vec4 vertexView)
 {
-    // check distance; alpha out if its beyone the horizon distance.
+    // Project the ORIGINAL vertex into the main camera's clip space
+    // BEFORE clamping moves it.  The interpolated NDC in the fragment
+    // shader lets us discard geometry that was outside the viewport —
+    // the ProxyCullVisitor uses the wider RTT frustum, so without this
+    // check, mis-clamped off-screen triangles bleed into the screen edge.
+    vec4 clipPos = gl_ProjectionMatrix * vertexView;
+    oe_clamp_screenNDC = clipPos.xy / clipPos.w;
+
+    // check distance; alpha out if its beyond the horizon distance.
 #ifdef OE_IS_GEOCENTRIC
     oe_clamp_alpha = clamp(oe_clamp_horizonDistance2 - (vertexView.z*vertexView.z), 0.0, 1.0);
 #else
@@ -91,10 +100,16 @@ void oe_clamp_vertex(inout vec4 vertexView)
 #pragma vp_location   fragment_coloring
 
 in float oe_clamp_alpha;
+in vec2  oe_clamp_screenNDC;
 
 void oe_clamp_fragment(inout vec4 color)
 {
-    // adjust the alpha component to "hide" geometry beyond the visible horizon.
+    // Discard fragments whose pre-clamping position was outside (or near
+    // the edge of) the main camera viewport.  The interpolated NDC gives
+    // per-fragment precision along the actual screen boundary.
+    if (abs(oe_clamp_screenNDC.x) > 0.90 || abs(oe_clamp_screenNDC.y) > 0.90)
+        discard;
+
     color.a *= oe_clamp_alpha;
 }
 

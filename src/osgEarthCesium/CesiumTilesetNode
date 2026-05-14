@@ -8,10 +8,24 @@
 #include "Export"
 #include "PrepareRenderResources"
 #include <osg/Group>
+#include <osgEarth/Terrain>
+
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <unordered_set>
+#include <vector>
+
+namespace osgEarth { class Map; }
 
 namespace osgEarth { namespace Cesium
 {
     using namespace osgEarth;
+
+    struct ClampWorkResult;
 
     class OSGEARTHCESIUM_EXPORT CesiumTilesetNode : public osg::Group
     {
@@ -34,14 +48,40 @@ namespace osgEarth { namespace Cesium
         int getMinimumRenderableLevel() const;
         void setMinimumRenderableLevel(int level);
 
-        unsigned int reclampLoadedTiles(const TilesetRenderStyleOptions& renderStyle);
-        std::shared_ptr<TilesetTerrainClampTask> snapshotLoadedTilesTerrainClampTask(
-            const TilesetRenderStyleOptions& renderStyle);
-        unsigned int applyLoadedTilesTerrainClampTask(TilesetTerrainClampTask& task);
+        void invalidateClampedTiles();
 
-    private:        
+        // Called by TerrainCallbackAdapter when terrain tiles load/change.
+        void onTileUpdate(const TileKey& key, osg::Node* tile, TerrainCallbackContext& context);
+
+    private:
+        osg::Group* tileParent();
+        void ensureClampThread();
+        void clampWorkerLoop();
+        void applyClampResults();
+        void installTerrainCallback();
+
         void* _tileset = nullptr;
         int _minimumRenderableLevel = -1;
+        bool _clampToGround = false;
+
+        // Async CPU clamping -- all ElevationQuery work happens on _clampThread.
+        std::mutex _clampMutex;
+        std::condition_variable _clampCV;
+        std::deque<osg::ref_ptr<osg::Node>> _clampPending;
+        std::unordered_set<osg::Node*> _clampInFlight;
+        const osgEarth::Map* _workerMap = nullptr;
+
+        std::mutex _resultMutex;
+        std::deque<std::shared_ptr<ClampWorkResult>> _clampResults;
+
+        std::thread _clampThread;
+        std::atomic<bool> _clampRunning{false};
+
+        // Terrain change detection -- fires invalidation when elevation data updates.
+        std::atomic<unsigned> _clampGeneration{0};
+        std::atomic<bool> _terrainDirty{false};
+        osg::ref_ptr<TerrainCallback> _terrainCallback;
+        bool _terrainCallbackInstalled = false;
     };
 } }
 
