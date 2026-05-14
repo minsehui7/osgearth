@@ -10,6 +10,7 @@
 #include <osgEarth/Threading>
 #include <osg/OperationThread>
 #include <osg/View>
+#include <atomic>
 
 namespace osgEarth
 {
@@ -245,6 +246,16 @@ namespace osgEarth
 
         // access the raw terrain graph
         osg::Node* getGraph() const { return _graph.get(); }
+
+        /** Lock-free elevation revision counter.  Bumped when the
+         *  underlying elevation data changes so consumers can poll
+         *  without going through the callback / queue machinery. */
+        unsigned getElevationRevision() const {
+            return _elevationRevision.load(std::memory_order_acquire);
+        }
+        void bumpElevationRevision() {
+            _elevationRevision.fetch_add(1u, std::memory_order_release);
+        }
         
         // queues the onTileUpdate callback (internal)
         void notifyTileUpdate( const TileKey& key, osg::Node* tile );
@@ -277,6 +288,7 @@ namespace osgEarth
         osg::observer_ptr<osg::Node> _graph;
 
         osg::ref_ptr<osg::OperationQueue> _updateQueue;
+        std::atomic<unsigned>             _elevationRevision{0};
         
         void fireMapElevationChanged();
         void fireTileUpdate( const TileKey& key, osg::Node* tile );

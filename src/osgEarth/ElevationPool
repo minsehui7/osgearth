@@ -11,6 +11,7 @@
 #include <osgEarth/TileKey>
 #include <osgEarth/Threading>
 #include <osgEarth/Containers>
+#include <atomic>
 #include <unordered_map>
 
 namespace osgEarth
@@ -127,6 +128,9 @@ namespace osgEarth
         //! Assign map to the pool. Required.
         void setMap(const Map* map);
 
+        //! Invalidate cached elevation tiles without changing the layer stack.
+        void dirty();
+
         //! Sample the map's elevation at a point.
         //! @param p  Point at which to sample
         //! @param ws Optional working set (can be NULL)
@@ -231,6 +235,7 @@ namespace osgEarth
         // current map data reflection
         MapData _mapData;
         Threading::ReadWriteMutex _mapDataMutex;
+        std::atomic<unsigned> _revision{0};
 
         // internal - get a sample at a point
         ElevationSample getSample(

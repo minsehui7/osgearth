@@ -12,6 +12,7 @@
 #include <osgEarth/GeoCommon>
 #include <osgEarth/MapNode>
 #include <osgEarth/Notify>
+#include <osgEarth/Progress>
 #include <osgEarth/SpatialReference>
 #include <osgUtil/CullVisitor>
 #include <Cesium3DTilesSelection/BoundingVolume.h>
@@ -20,7 +21,9 @@
 #include <osg/MatrixTransform>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <future>
 #include <iterator>
 
 using namespace osgEarth::Cesium;
@@ -69,18 +72,24 @@ namespace
     class AsyncClampVisitor : public osg::NodeVisitor
     {
     public:
-        AsyncClampVisitor(const osgEarth::Map* map)
+        AsyncClampVisitor(const osgEarth::Map* map, const std::atomic<bool>& stopFlag)
             : osg::NodeVisitor(osg::NodeVisitor::TRAVERSE_ALL_CHILDREN)
+            , _stopFlag(stopFlag)
         {
             _wgs84 = osgEarth::SpatialReference::get("wgs84");
             _ecef = _wgs84 ? _wgs84->getGeocentricSRS() : nullptr;
             _eq.setMap(map);
+            _progress = new ProgressCallback(nullptr, [&stopFlag]() {
+                return !stopFlag.load(std::memory_order_relaxed);
+            });
         }
 
         bool valid() const { return _wgs84 && _ecef; }
+        bool stopped() const { return !_stopFlag.load(std::memory_order_relaxed); }
 
         void apply(osg::MatrixTransform& mt) override
         {
+            if (stopped()) return;
             osg::Matrixd saved = _currentMatrix;
             _currentMatrix.preMult(mt.getMatrix());
             traverse(mt);
@@ -89,6 +98,8 @@ namespace
 
         void apply(osg::Drawable& drawable) override
         {
+            if (stopped()) return;
+
             auto* geom = drawable.asGeometry();
             if (!geom)
                 return;
@@ -116,17 +127,20 @@ namespace
                     wgs84Pts.emplace_back(0.0, 0.0, 0.0);
             }
 
-            // Query terrain elevation in bounded chunks
+            // Query terrain elevation in bounded chunks; bail early on stop.
             for (std::size_t off = 0; off < nv; off += kElevQueryChunkSize)
             {
+                if (stopped()) return;
                 const std::size_t end = std::min(off + kElevQueryChunkSize, nv);
                 std::vector<osg::Vec3d> chunk(
                     wgs84Pts.begin() + static_cast<std::ptrdiff_t>(off),
                     wgs84Pts.begin() + static_cast<std::ptrdiff_t>(end));
-                _eq.getElevations(chunk, _wgs84, true, 0.0);
+                _eq.getElevations(chunk, _wgs84, true, 0.0, _progress.get());
                 for (std::size_t i = 0; i < chunk.size(); ++i)
                     wgs84Pts[off + i].z() = chunk[i].z();
             }
+
+            if (stopped()) return;
 
             // Build a NEW vertex array with clamped positions
             osg::ref_ptr<osg::Vec3Array> newVerts = new osg::Vec3Array(nv);
@@ -166,20 +180,10 @@ namespace
         const osgEarth::SpatialReference* _wgs84 = nullptr;
         const osgEarth::SpatialReference* _ecef = nullptr;
         osgEarth::ElevationQuery _eq;
+        const std::atomic<bool>& _stopFlag;
+        osg::ref_ptr<osgEarth::ProgressCallback> _progress;
     };
 
-    class ClearClampFlagVisitor : public osg::NodeVisitor
-    {
-    public:
-        ClearClampFlagVisitor()
-            : osg::NodeVisitor(osg::NodeVisitor::TRAVERSE_ALL_CHILDREN) {}
-
-        void apply(osg::Node& node) override
-        {
-            node.setUserValue("cpuClamped", false);
-            traverse(node);
-        }
-    };
 }
 
 // ---- Construction / destruction ----------------------------------------------
@@ -243,7 +247,14 @@ CesiumTilesetNode::~CesiumTilesetNode()
     _clampRunning.store(false, std::memory_order_release);
     _clampCV.notify_all();
     if (_clampThread.joinable())
-        _clampThread.join();
+    {
+        auto joinFuture = std::async(std::launch::async, [this]() { _clampThread.join(); });
+        if (joinFuture.wait_for(std::chrono::seconds(3)) == std::future_status::timeout)
+        {
+            OE_WARN << "[CesiumClamp] worker join timed out — detaching" << std::endl;
+            _clampThread.detach();
+        }
+    }
 
     Cesium3DTilesSelection::Tileset* tileset = (Cesium3DTilesSelection::Tileset*)_tileset;
     delete tileset;
@@ -329,13 +340,15 @@ CesiumTilesetNode::clampWorkerLoop()
 
         if (!tileNode.valid() || !map)
         {
-            // Cannot process -- remove from in-flight so it can be re-queued later.
             std::lock_guard<std::mutex> lock(_clampMutex);
             _clampInFlight.erase(tileNode.get());
             continue;
         }
 
-        AsyncClampVisitor visitor(map);
+        if (!_clampRunning.load(std::memory_order_acquire))
+            break;
+
+        AsyncClampVisitor visitor(map, _clampRunning);
         if (!visitor.valid())
         {
             std::lock_guard<std::mutex> lock(_clampMutex);
@@ -343,9 +356,10 @@ CesiumTilesetNode::clampWorkerLoop()
             continue;
         }
 
-        // Read-only traversal: reads vertices + transforms, queries ElevationPool
-        // (ElevationPool has internal locking and is safe to call from any thread).
         tileNode->accept(visitor);
+
+        if (visitor.stopped())
+            break;
 
         auto result = std::make_shared<ClampWorkResult>();
         result->tileNode = tileNode;
@@ -368,7 +382,11 @@ CesiumTilesetNode::applyClampResults()
         results.swap(_clampResults);
     }
 
+    if (results.empty())
+        return;
+
     const unsigned currentGen = _clampGeneration.load(std::memory_order_acquire);
+    unsigned applied = 0, skippedGen = 0, skippedGeom = 0;
 
     for (auto& result : results)
     {
@@ -377,10 +395,15 @@ CesiumTilesetNode::applyClampResults()
             _clampInFlight.erase(result->tileNode.get());
         }
 
-        // Discard results computed against a stale terrain generation.
-        if (result->generation < currentGen)
+        if (result->generation != currentGen)
+        {
+            ++skippedGen;
+            OE_NOTICE << "[CesiumClamp] SKIP stale result  gen=" << result->generation
+                      << "  currentGen=" << currentGen << std::endl;
             continue;
+        }
 
+        unsigned geomCount = 0;
         for (auto& update : result->updates)
         {
             osg::ref_ptr<osg::Geometry> geom;
@@ -388,9 +411,28 @@ CesiumTilesetNode::applyClampResults()
             {
                 geom->setVertexArray(update.newVerts.get());
                 geom->dirtyBound();
+                ++geomCount;
+            }
+            else
+            {
+                ++skippedGeom;
             }
         }
-        result->tileNode->setUserValue("cpuClamped", true);
+        result->tileNode->setUserValue("clampGeneration", result->generation);
+        ++applied;
+        OE_NOTICE << "[CesiumClamp] APPLIED  tile=" << result->tileNode.get()
+                  << "  gen=" << result->generation
+                  << "  geoms=" << geomCount
+                  << "  updates=" << result->updates.size() << std::endl;
+    }
+
+    if (applied > 0 || skippedGen > 0)
+    {
+        OE_NOTICE << "[CesiumClamp] applyClampResults: applied=" << applied
+                  << "  skippedGen=" << skippedGen
+                  << "  skippedGeom=" << skippedGeom
+                  << "  currentGen=" << currentGen
+                  << "  totalResults=" << results.size() << std::endl;
     }
 }
 
@@ -404,15 +446,33 @@ CesiumTilesetNode::installTerrainCallback()
     auto* mapNode = osgEarth::MapNode::findMapNode(this);
     if (!mapNode || !mapNode->getTerrain())
         return;
+    _cachedTerrain = mapNode->getTerrain();
+    _lastElevationRevision = _cachedTerrain->getElevationRevision();
     _terrainCallback = new TerrainCallbackAdapter<CesiumTilesetNode>(this);
-    mapNode->getTerrain()->addTerrainCallback(_terrainCallback.get());
+    _cachedTerrain->addTerrainCallback(_terrainCallback.get());
     _terrainCallbackInstalled = true;
 }
 
 void
-CesiumTilesetNode::onTileUpdate(const TileKey& /*key*/, osg::Node* /*tile*/, TerrainCallbackContext& /*context*/)
+CesiumTilesetNode::onTileUpdate(const TileKey& /*key*/, osg::Node* /*tile*/, TerrainCallbackContext& context)
 {
+    if (const Terrain* terrain = context.getTerrain())
+        _lastElevationRevision = terrain->getElevationRevision();
     _terrainDirty.store(true, std::memory_order_release);
+}
+
+bool
+CesiumTilesetNode::pollTerrainChanged()
+{
+    if (!_cachedTerrain.valid())
+        return false;
+    unsigned rev = _cachedTerrain->getElevationRevision();
+    if (rev != _lastElevationRevision)
+    {
+        _lastElevationRevision = rev;
+        return true;
+    }
+    return false;
 }
 
 // ---- Traversal ---------------------------------------------------------------
@@ -422,6 +482,9 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
 {
     if (nv.getVisitorType() == nv.CULL_VISITOR)
     {
+        if (_clampToGround)
+            installTerrainCallback();
+
         const osgUtil::CullVisitor* cv = nv.asCullVisitor();
         osg::Vec3d osgEye, osgCenter, osgUp;
         cv->getModelViewMatrix()->getLookAt(osgEye, osgCenter, osgUp);
@@ -448,11 +511,18 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         vfov = osg::DegreesToRadians(vfov);
         double hfov = 2 * atan(tan(vfov / 2) * (ar));
 
+        if (_clampToGround && pollTerrainChanged())
+            invalidateClampedTiles();
+
         if (_minimumRenderableLevel >= 0)
         {
             const double viewZoom = estimateViewZoomLevel(osgEye, vfov, cv->getViewport()->height());
             if (viewZoom < static_cast<double>(_minimumRenderableLevel))
             {
+                if (_clampToGround)
+                {
+                    applyClampResults();
+                }
                 removeChildren(0, getNumChildren());
                 osg::Group::traverse(nv);
                 return;
@@ -480,9 +550,11 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
                 {
                     if (_clampToGround)
                     {
-                        bool alreadyClamped = false;
-                        result->node->getUserValue("cpuClamped", alreadyClamped);
-                        if (!alreadyClamped)
+                        unsigned tileClampGen = 0;
+                        const bool hasClampGen =
+                            result->node->getUserValue("clampGeneration", tileClampGen);
+                        unsigned curGen = _clampGeneration.load(std::memory_order_acquire);
+                        if (!hasClampGen || tileClampGen != curGen)
                         {
                             std::lock_guard<std::mutex> lock(_clampMutex);
                             if (_clampInFlight.find(result->node.get()) == _clampInFlight.end())
@@ -496,6 +568,11 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
                     parent->addChild(result->node.get());
                 }
             }
+        }
+
+        if (_clampToGround)
+        {
+            applyClampResults();
         }
 
         if (needsClampQueue)
@@ -525,6 +602,7 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
 
             applyClampResults();
         }
+
         osg::Group::traverse(nv);
     }
 
@@ -557,15 +635,4 @@ void
 CesiumTilesetNode::invalidateClampedTiles()
 {
     _clampGeneration.fetch_add(1, std::memory_order_release);
-    {
-        std::lock_guard<std::mutex> lock(_clampMutex);
-        _clampPending.clear();
-        _clampInFlight.clear();
-    }
-    {
-        std::lock_guard<std::mutex> lock(_resultMutex);
-        _clampResults.clear();
-    }
-    ClearClampFlagVisitor visitor;
-    accept(visitor);
 }

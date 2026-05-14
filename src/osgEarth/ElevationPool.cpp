@@ -66,7 +66,7 @@ ElevationPool::setMap(const Map* map)
         newData.mapProfile = map->getProfile();
         newData.mapProfileNoVDatum = map->getProfileNoVDatum();
         newData.interpolation = map->getElevationInterpolation();
-        newData.hash = 0;
+        newData.hash = _revision.load(std::memory_order_acquire);
         for (auto& layer : newData.layers)
             newData.hash = hash_value_unsigned(newData.hash, layer->getUID(), layer->getRevision());
 
@@ -120,6 +120,12 @@ ElevationPool::setMap(const Map* map)
 
         std::swap(_mapData, newData);
     }
+}
+
+void
+ElevationPool::dirty()
+{
+    _revision.fetch_add(1u, std::memory_order_release);
 }
 
 int
@@ -871,7 +877,7 @@ ElevationPool::snapshotMapData(WorkingSet* ws)
     ScopedWriteLock exclusive(_mapDataMutex);
 
     // check for revision change.
-    unsigned hash = 0;
+    std::size_t hash = _revision.load(std::memory_order_acquire);
     for (auto& layer : _mapData.layers) {
         hash = hash_value_unsigned(hash, layer->getUID(), layer->getRevision());
     }
@@ -885,7 +891,7 @@ ElevationPool::snapshotMapData(WorkingSet* ws)
         out.layers = ws->_elevationLayers;
 
         // override with the hash of the WS layers:
-        hash = 0;
+        hash = _revision.load(std::memory_order_acquire);
         for(auto& layer : ws->_elevationLayers)
             hash = hash_value_unsigned(hash, layer->getUID(), layer->getRevision());
         out.hash = hash;

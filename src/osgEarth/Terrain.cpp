@@ -319,6 +319,8 @@ Terrain::fireTileUpdate( const TileKey& key, osg::Node* node )
 void
 Terrain::notifyMapElevationChanged()
 {
+    bumpElevationRevision();
+
     if (_callbacksSize > 0)
     {
         onTileUpdateOperation* op = new onTileUpdateOperation(TileKey::INVALID, 0L, this);

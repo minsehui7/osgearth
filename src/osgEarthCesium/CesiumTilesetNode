@@ -78,10 +78,13 @@ namespace osgEarth { namespace Cesium
         std::atomic<bool> _clampRunning{false};
 
         // Terrain change detection -- fires invalidation when elevation data updates.
-        std::atomic<unsigned> _clampGeneration{0};
+        std::atomic<unsigned> _clampGeneration{1};
         std::atomic<bool> _terrainDirty{false};
         osg::ref_ptr<TerrainCallback> _terrainCallback;
         bool _terrainCallbackInstalled = false;
+        osg::ref_ptr<Terrain> _cachedTerrain;
+        unsigned _lastElevationRevision = 0;
+        bool pollTerrainChanged();
     };
 } }
 
