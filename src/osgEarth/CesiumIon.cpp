@@ -348,12 +348,24 @@ CesiumIonTerrainMeshLayer::init()
     TerrainMeshLayer::init();
 }
 
+namespace
+{
+    bool readCesiumTerrainMetadata(
+        const URI& assetBase,
+        const osgDB::Options* readOptions,
+        unsigned& outMaxZoom,
+        std::vector<CesiumTerrainAvailabilityRect>& outAvailability);
+}
+
 Status
 CesiumIonTerrainMeshLayer::openImplementation()
 {
     Status parent = TerrainMeshLayer::openImplementation();
     if (parent.isError())
         return parent;
+
+    if (!getProfile())
+        setProfile(Profile::create(Profile::GLOBAL_GEODETIC));
 
     const char* key = ::getenv("OSGEARTH_CESIUMION_KEY");
     if (key)
@@ -386,6 +398,16 @@ CesiumIonTerrainMeshLayer::openImplementation()
         URIContext uriContext;
         uriContext.addHeader("authorization", ionResource._acceptHeader);
         _assetURI = URI(ionResource._resourceUrl, uriContext);
+
+        unsigned maxZoom = 0u;
+        std::vector<CesiumTerrainAvailabilityRect> availability;
+        if (readCesiumTerrainMetadata(_assetURI, getReadOptions(), maxZoom, availability) &&
+            getMaxDataLevel() > maxZoom)
+        {
+            setMaxDataLevel(maxZoom);
+        }
+        _availability = std::move(availability);
+        _hasAvailability = !_availability.empty();
     }
 
     return status;
@@ -394,7 +416,15 @@ CesiumIonTerrainMeshLayer::openImplementation()
 Status
 CesiumIonTerrainMeshLayer::closeImplementation()
 {
+    _meshCache.clear();
     return TerrainMeshLayer::closeImplementation();
+}
+
+void
+CesiumIonTerrainMeshLayer::dirty()
+{
+    _meshCache.clear();
+    TerrainMeshLayer::dirty();
 }
 
 
@@ -403,6 +433,13 @@ CesiumIonTerrainMeshLayer::closeImplementation()
 namespace
 {
     std::atomic<bool> s_logTerrainHttpResponses{ false };
+
+    std::string makeTerrainMeshCacheKey(const TileKey& key)
+    {
+        const Profile* profile = key.getProfile();
+        return Stringify() << key.str() << ':'
+            << (profile ? profile->getHorizSignature() : 0u);
+    }
 
     const char* readResultCodeName(ReadResult::Code code)
     {
@@ -628,6 +665,76 @@ namespace
             assetBase.context());
     }
 
+    static URI makeCesiumTerrainLayerJsonUri(const URI& assetBase)
+    {
+        return URI(
+            Stringify() << assetBase.full()
+                        << (endsWith(assetBase.full(), "/") ? "" : "/")
+                        << "layer.json",
+            assetBase.context());
+    }
+
+    bool readCesiumTerrainMetadata(
+        const URI& assetBase,
+        const osgDB::Options* readOptions,
+        unsigned& outMaxZoom,
+        std::vector<CesiumTerrainAvailabilityRect>& outAvailability)
+    {
+        const URI layerJsonURI = makeCesiumTerrainLayerJsonUri(assetBase);
+        const ReadResult result = layerJsonURI.readString(readOptions);
+        if (result.failed())
+            return false;
+
+        Json::Value doc;
+        Json::Reader reader;
+        if (!reader.parse(result.getString(), doc))
+            return false;
+
+        bool foundMaxZoom = false;
+        if (doc.isMember("maxzoom") && doc["maxzoom"].isUInt())
+        {
+            outMaxZoom = doc["maxzoom"].asUInt();
+            foundMaxZoom = true;
+        }
+
+        if (doc.isMember("available") && doc["available"].isArray() && !doc["available"].empty())
+        {
+            const Json::Value& available = doc["available"];
+            for (unsigned level = 0u; level < available.size(); ++level)
+            {
+                const Json::Value& ranges = available[level];
+                if (!ranges.isArray())
+                    continue;
+
+                for (const Json::Value& range : ranges)
+                {
+                    if (!range.isObject() ||
+                        !range.isMember("startX") || !range.isMember("startY") ||
+                        !range.isMember("endX") || !range.isMember("endY"))
+                    {
+                        continue;
+                    }
+
+                    CesiumTerrainAvailabilityRect rect;
+                    rect.level = static_cast<unsigned>(level);
+                    rect.startX = range["startX"].asUInt();
+                    rect.startY = range["startY"].asUInt();
+                    rect.endX = range["endX"].asUInt();
+                    rect.endY = range["endY"].asUInt();
+                    outAvailability.push_back(rect);
+                }
+            }
+
+            if (!foundMaxZoom)
+            {
+                outMaxZoom = static_cast<unsigned>(available.size() - 1u);
+                foundMaxZoom = true;
+            }
+        }
+
+        return foundMaxZoom || !outAvailability.empty();
+    }
+
     static TileMesh tryReadCesiumQuantizedMeshForKey(
         const TileKey& key,
         const URI& assetBase,
@@ -655,11 +762,13 @@ namespace
                 unsigned logX = 0u;
                 unsigned logY = 0u;
                 key.getTileXY(logX, logY);
+                const unsigned displayMaxAttempts =
+                    result.code() == ReadResult::RESULT_NOT_FOUND ? attempt + 1u : maxAttempts;
                 std::stringstream log;
                 log << LC << "Terrain HTTP "
                     << (result.succeeded() ? "OK" : "FAIL")
                     << " code=" << readResultCodeName(result.code())
-                    << " attempt=" << (attempt + 1u) << "/" << maxAttempts
+                    << " attempt=" << (attempt + 1u) << "/" << displayMaxAttempts
                     << " lod=" << key.getLevelOfDetail()
                     << " x=" << logX
                     << " y=" << logY
@@ -675,6 +784,9 @@ namespace
                 std::stringstream buf(result.getString());
                 return quantizedMeshToTileMesh(key, buf);
             }
+
+            if (result.code() == ReadResult::RESULT_NOT_FOUND)
+                break;
         }
         if (out_code) *out_code = lastCode;
         return TileMesh();
@@ -787,10 +899,45 @@ bool CesiumIonTerrainMeshLayer::getLogTerrainHttpResponses()
     return s_logTerrainHttpResponses.load(std::memory_order_relaxed);
 }
 
+bool CesiumIonTerrainMeshLayer::isTerrainTileAvailable(const TileKey& key) const
+{
+    if (!_hasAvailability)
+        return true;
+
+    unsigned x = 0u;
+    unsigned y = 0u;
+    key.getTileXY(x, y);
+
+    unsigned numRows = 0u;
+    unsigned numCols = 0u;
+    key.getProfile()->getNumTiles(key.getLevelOfDetail(), numCols, numRows);
+    if (numRows == 0u)
+        return false;
+    y = numRows - y - 1u;
+
+    const unsigned level = key.getLevelOfDetail();
+    for (const CesiumTerrainAvailabilityRect& rect : _availability)
+    {
+        if (rect.level == level &&
+            x >= rect.startX && x <= rect.endX &&
+            y >= rect.startY && y <= rect.endY)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 TileMesh CesiumIonTerrainMeshLayer::createTileImplementation(
     const TileKey& key,
     ProgressCallback* progress) const
 {
+    const std::string cacheKey = makeTerrainMeshCacheKey(key);
+    const auto cached = _meshCache.get(cacheKey);
+    if (cached.has_value())
+        return cached.value();
+
     // ── 서킷 브레이커 (fastFail 모드에서만 활성) ────────────────────────────
     // 서버 오류 후 30초간 요청을 완전히 건너뛴다. HTTP 스택에 도달하지 않으므로
     // 죽은 서버에 반복 요청을 보내지 않고 즉시 폴백 레이어로 넘어간다.
@@ -804,36 +951,79 @@ TileMesh CesiumIonTerrainMeshLayer::createTileImplementation(
     }
 
     ReadResult::Code code = ReadResult::RESULT_NOT_FOUND;
-    TileMesh mesh = tryReadCesiumQuantizedMeshForKey(key, _assetURI, getReadOptions(), progress, &code, _fastFailOnServerError);
-    if (mesh.verts.valid())
-    {
-        applyConstraints(key, mesh);
-        return mesh;
-    }
+    const unsigned maxDataLevel = getMaxDataLevel();
+    const bool overMaxDataLevel = key.getLevelOfDetail() > maxDataLevel;
 
-    // fastFailOnServerError: 연결 오류 → 서킷 열고 즉시 반환
-    if (_fastFailOnServerError && code != ReadResult::RESULT_NOT_FOUND)
+    if (!overMaxDataLevel)
     {
-        _circuitOpen.store(true, std::memory_order_relaxed);
-        const int64_t retryAt = (std::chrono::steady_clock::now().time_since_epoch()
-                                 + std::chrono::nanoseconds(_kCircuitCooldownNs)).count();
-        _circuitRetryNs.store(retryAt, std::memory_order_relaxed);
-        return TileMesh();
+        TileMesh mesh;
+        if (isTerrainTileAvailable(key))
+        {
+            mesh = tryReadCesiumQuantizedMeshForKey(
+                key, _assetURI, getReadOptions(), progress, &code, _fastFailOnServerError);
+        }
+
+        if (mesh.verts.valid())
+        {
+            applyConstraints(key, mesh);
+            _meshCache.insert(cacheKey, mesh);
+            return mesh;
+        }
+
+        if (code == ReadResult::RESULT_NOT_FOUND || !isTerrainTileAvailable(key))
+            _meshCache.insert(cacheKey, TileMesh());
+
+        // fastFailOnServerError: 연결 오류 → 서킷 열고 즉시 반환
+        if (_fastFailOnServerError && code != ReadResult::RESULT_NOT_FOUND)
+        {
+            _circuitOpen.store(true, std::memory_order_relaxed);
+            const int64_t retryAt = (std::chrono::steady_clock::now().time_since_epoch()
+                                     + std::chrono::nanoseconds(_kCircuitCooldownNs)).count();
+            _circuitRetryNs.store(retryAt, std::memory_order_relaxed);
+            return TileMesh();
+        }
     }
 
     constexpr unsigned kMaxParentWalk = 16u;
-    TileKey parentKey = key.createParentKey();
+    TileKey parentKey = overMaxDataLevel
+        ? key.createAncestorKey(static_cast<int>(maxDataLevel))
+        : key.createParentKey();
     for (unsigned hop = 0; hop < kMaxParentWalk && parentKey.valid(); ++hop, parentKey = parentKey.createParentKey())
     {
         if (progress && progress->isCanceled())
             return TileMesh();
 
-        TileMesh parentMesh = tryReadCesiumQuantizedMeshForKey(parentKey, _assetURI, getReadOptions(), progress, &code, _fastFailOnServerError);
+        const std::string parentCacheKey = makeTerrainMeshCacheKey(parentKey);
+        const auto parentCached = _meshCache.get(parentCacheKey);
+        TileMesh parentMesh;
+        if (parentCached.has_value())
+        {
+            parentMesh = parentCached.value();
+            code = parentMesh.verts.valid() ? ReadResult::RESULT_OK : ReadResult::RESULT_NOT_FOUND;
+        }
+        else if (!isTerrainTileAvailable(parentKey))
+        {
+            code = ReadResult::RESULT_NOT_FOUND;
+            _meshCache.insert(parentCacheKey, TileMesh());
+        }
+        else
+        {
+            parentMesh = tryReadCesiumQuantizedMeshForKey(
+                parentKey, _assetURI, getReadOptions(), progress, &code, _fastFailOnServerError);
+            _meshCache.insert(parentCacheKey, parentMesh);
+        }
+
         if (!parentMesh.verts.valid())
         {
             // fastFailOnServerError: 서버 오류면 부모 워크도 즉시 중단
             if (_fastFailOnServerError && code != ReadResult::RESULT_NOT_FOUND)
+            {
+                _circuitOpen.store(true, std::memory_order_relaxed);
+                const int64_t retryAt = (std::chrono::steady_clock::now().time_since_epoch()
+                                         + std::chrono::nanoseconds(_kCircuitCooldownNs)).count();
+                _circuitRetryNs.store(retryAt, std::memory_order_relaxed);
                 return TileMesh();
+            }
             continue;
         }
 
@@ -841,9 +1031,13 @@ TileMesh CesiumIonTerrainMeshLayer::createTileImplementation(
         if (upsampled.verts.valid() && upsampled.verts->size() >= 3u)
         {
             applyConstraints(key, upsampled);
+            _meshCache.insert(cacheKey, upsampled);
             return upsampled;
         }
     }
+
+    if (code == ReadResult::RESULT_NOT_FOUND)
+        _meshCache.insert(cacheKey, TileMesh());
 
     return TileMesh();
 }

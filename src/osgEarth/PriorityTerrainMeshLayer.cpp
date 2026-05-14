@@ -120,6 +120,9 @@ PriorityTerrainMeshLayer::addedToMap(const Map* map)
 {
     super::addedToMap(map);
 
+    if (!getProfile() && map && map->getProfile())
+        setProfile(map->getProfile());
+
     osg::ref_ptr<const Profile> profile = getProfile();
     DataExtentList outputExtents;
     bool allExtentsKnown = true;

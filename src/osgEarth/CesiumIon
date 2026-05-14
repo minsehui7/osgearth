@@ -7,12 +7,14 @@
 #define OSGEARTH_CESIUMION_H
 
 #include <osgEarth/Common>
+#include <osgEarth/Containers>
 #include <osgEarth/ImageLayer>
 #include <osgEarth/TerrainMeshLayer>
 #include <osgEarth/ThreeDTilesLayer>
 #include <osgEarth/URI>
 
 #include <atomic>
+#include <vector>
 
 
 namespace osgEarth
@@ -98,6 +100,15 @@ namespace osgEarth
     /**
      * Elevation layer connection to a Cesium ION server.
      */
+    struct CesiumTerrainAvailabilityRect
+    {
+        unsigned level = 0u;
+        unsigned startX = 0u;
+        unsigned startY = 0u;
+        unsigned endX = 0u;
+        unsigned endY = 0u;
+    };
+
     class OSGEARTH_EXPORT CesiumIonTerrainMeshLayer : public TerrainMeshLayer
     {
     public: // serialization
@@ -146,10 +157,13 @@ namespace osgEarth
         virtual Status openImplementation() override;
 
         virtual Status closeImplementation() override;
+        virtual void dirty() override;
 
         virtual TileMesh createTileImplementation(
             const TileKey& key,
             ProgressCallback* progress) const override;
+
+        bool isTerrainTileAvailable(const TileKey& key) const;
 
     protected: // Layer
 
@@ -166,6 +180,9 @@ namespace osgEarth
         URI _assetURI;
         std::string _key;
         bool _fastFailOnServerError = false;
+        bool _hasAvailability = false;
+        std::vector<CesiumTerrainAvailabilityRect> _availability;
+        mutable LRUCache<std::string, TileMesh> _meshCache{ 256u };
 
         // 서킷 브레이커: 서버 오류 후 _kCircuitCooldown 동안 요청을 건너뜀.
         // fastFailOnServerError=true 일 때만 활성화.

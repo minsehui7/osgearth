@@ -21,6 +21,7 @@
 #include <osgEarth/LineDrawable>
 #include <osgEarth/Map>
 #include <osgEarth/Notify>
+#include <osgEarth/Progress>
 #include <osgEarth/Registry>
 #include <osgEarth/SpatialReference>
 #include <osgEarth/VirtualProgram>
@@ -1731,6 +1732,9 @@ osgEarth::Cesium::resolveTerrainClampTask(
     osgEarth::Util::ElevationQuery query(map);
     const double desiredResolution =
         task.renderStyle.clampSampleResolutionM > 0.0 ? task.renderStyle.clampSampleResolutionM : 0.0;
+    osg::ref_ptr<osgEarth::ProgressCallback> progress =
+        new osgEarth::ProgressCallback(static_cast<osgEarth::Cancelable*>(nullptr),
+            [cancelFlag]() { return cancelFlag && cancelFlag->load(std::memory_order_acquire); });
     constexpr std::size_t kChunkSize = 2048u;
     bool resolvedAny = false;
 
@@ -1751,7 +1755,7 @@ osgEarth::Cesium::resolveTerrainClampTask(
             std::vector<osg::Vec3d> chunk(
                 geometry.samplesLonLatHeight.begin() + static_cast<std::ptrdiff_t>(offset),
                 geometry.samplesLonLatHeight.begin() + static_cast<std::ptrdiff_t>(offset + count));
-            if (!query.getElevations(chunk, wgs84.get(), true, desiredResolution))
+            if (!query.getElevations(chunk, wgs84.get(), true, desiredResolution, progress.get()))
             {
                 resolvedGeometry = false;
                 break;

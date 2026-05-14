@@ -50,6 +50,9 @@ QuantizedMeshElevationLayer::openImplementation()
                           "Source TerrainMeshLayer failed to open: " + s.message());
     }
 
+    if (!getProfile() && _source->getProfile())
+        setProfile(_source->getProfile());
+
     return Status::NoError;
 }
 
@@ -62,6 +65,14 @@ QuantizedMeshElevationLayer::addedToMap(const Map* map)
     if (_source.valid() && _source->isOpen())
     {
         _source->addedToMap(map);
+
+        if (!getProfile())
+        {
+            if (_source->getProfile())
+                setProfile(_source->getProfile());
+            else if (map && map->getProfile())
+                setProfile(map->getProfile());
+        }
 
         // Mirror the source's data extents so ElevationPool queries are scoped correctly.
         DataExtentList extents;

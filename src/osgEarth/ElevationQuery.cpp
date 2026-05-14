@@ -5,6 +5,7 @@
  */
 #include <osgEarth/ElevationQuery>
 #include <osgEarth/Map>
+#include <osgEarth/Progress>
 #include <osgSim/LineOfSight>
 
 #define LC "[ElevationQuery] "
@@ -114,13 +115,17 @@ bool
 ElevationQuery::getElevations(std::vector<osg::Vec3d>& points,
                               const SpatialReference*  pointsSRS,
                               bool                     ignoreZ,
-                              double                   desiredResolution )
+                              double                   desiredResolution,
+                              ProgressCallback*        progress )
 {       
     if (_map->getNumTerrainPatchLayers() > 0)
     {
         sync();
         for (osg::Vec3dArray::iterator i = points.begin(); i != points.end(); ++i)
         {
+            if (progress && progress->isCanceled())
+                return false;
+
             float elevation;
             double z = (*i).z();
             GeoPoint p(pointsSRS, *i, ALTMODE_ABSOLUTE);
@@ -144,7 +149,9 @@ ElevationQuery::getElevations(std::vector<osg::Vec3d>& points,
         {
             std::vector< osg::Vec3d > mapPoints = points;
             pointsSRS->transform(mapPoints, _map->getSRS());
-            int count = _map->getElevationPool()->sampleMapCoords(mapPoints.begin(), mapPoints.end(), Distance(desiredResolution, _map->getSRS()->getUnits()), nullptr, nullptr);
+            int count = _map->getElevationPool()->sampleMapCoords(
+                mapPoints.begin(), mapPoints.end(), Distance(desiredResolution, _map->getSRS()->getUnits()),
+                nullptr, progress);
             for (unsigned int i = 0; i < points.size(); ++i)
             {
                 points[i].z() = mapPoints[i].z();
@@ -153,7 +160,9 @@ ElevationQuery::getElevations(std::vector<osg::Vec3d>& points,
         }
         else
         {
-            return _map->getElevationPool()->sampleMapCoords(points.begin(), points.end(), Distance(desiredResolution, _map->getSRS()->getUnits()), nullptr, nullptr) > 0;
+            return _map->getElevationPool()->sampleMapCoords(
+                points.begin(), points.end(), Distance(desiredResolution, _map->getSRS()->getUnits()),
+                nullptr, progress) > 0;
         }
     }
 }
@@ -162,13 +171,17 @@ bool
 ElevationQuery::getElevations(const std::vector<osg::Vec3d>& points,
                               const SpatialReference*        pointsSRS,
                               std::vector<float>&            out_elevations,
-                              double                         desiredResolution )
+                              double                         desiredResolution,
+                              ProgressCallback*              progress )
 {
     if (_map->getNumTerrainPatchLayers() > 0)
     {
         sync();
         for (osg::Vec3dArray::const_iterator i = points.begin(); i != points.end(); ++i)
         {
+            if (progress && progress->isCanceled())
+                return false;
+
             float elevation;
             GeoPoint p(pointsSRS, *i, ALTMODE_ABSOLUTE);
 
@@ -192,7 +205,9 @@ ElevationQuery::getElevations(const std::vector<osg::Vec3d>& points,
         {
             pointsSRS->transform(mapPoints, _map->getSRS());
         }
-        int count = _map->getElevationPool()->sampleMapCoords(mapPoints.begin(), mapPoints.end(), Distance(desiredResolution, _map->getSRS()->getUnits()), nullptr, nullptr);
+        int count = _map->getElevationPool()->sampleMapCoords(
+            mapPoints.begin(), mapPoints.end(), Distance(desiredResolution, _map->getSRS()->getUnits()),
+            nullptr, progress);
         for (unsigned int i = 0; i < points.size(); ++i)
         {
             out_elevations.push_back(mapPoints[i].z());

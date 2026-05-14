@@ -78,7 +78,8 @@ namespace osgEarth { namespace Util
             std::vector<osg::Vec3d>& points,
             const SpatialReference*  pointsSRS,
             bool                     ignoreZ = true,
-            double                   desiredResolution =0.0 );
+            double                   desiredResolution =0.0,
+            ProgressCallback*        progress =nullptr );
 
         /**
          * Gets elevations for a whole array of points, storing the results in the
@@ -88,7 +89,8 @@ namespace osgEarth { namespace Util
             const std::vector<osg::Vec3d>& points,
             const SpatialReference*        pointsSRS,
             std::vector<float>&            out_elevations,
-            double                         desiredResolution =0.0 );
+            double                         desiredResolution =0.0,
+            ProgressCallback*              progress =nullptr );
 
         /** dtor */
         virtual ~ElevationQuery() { }
