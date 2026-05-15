@@ -11,6 +11,7 @@
 #include <osg/OperationThread>
 #include <osg/View>
 #include <atomic>
+#include <cstdint>
 
 namespace osgEarth
 {
@@ -256,7 +257,20 @@ namespace osgEarth
         void bumpElevationRevision() {
             _elevationRevision.fetch_add(1u, std::memory_order_release);
         }
-        
+
+        /** Lock-free signature of consumer-visible terrain state (shown tiles, LOD band, etc.).
+         *  Terrain engines set the base value with setConsumerVisibilitySignature(); this getter
+         *  mixes in a salt bumped from notifyMapElevationChanged() so elevation-only changes
+         *  still invalidate consumers without storing elevation revision in tile user data. */
+        std::uint64_t getConsumerVisibilitySignature() const {
+            const std::uint64_t base = _consumerVisibilitySignature.load(std::memory_order_acquire);
+            const std::uint32_t salt = _consumerVisibilitySalt.load(std::memory_order_acquire);
+            return base ^ (static_cast<std::uint64_t>(salt) * 0x9e3779b97f4a7c15ULL);
+        }
+        void setConsumerVisibilitySignature(std::uint64_t value) {
+            _consumerVisibilitySignature.store(value, std::memory_order_release);
+        }
+
         // queues the onTileUpdate callback (internal)
         void notifyTileUpdate( const TileKey& key, osg::Node* tile );
 
@@ -288,8 +302,10 @@ namespace osgEarth
         osg::observer_ptr<osg::Node> _graph;
 
         osg::ref_ptr<osg::OperationQueue> _updateQueue;
-        std::atomic<unsigned>             _elevationRevision{0};
-        
+        std::atomic<unsigned>            _elevationRevision{0};
+        std::atomic<std::uint64_t>      _consumerVisibilitySignature{0};
+        std::atomic<std::uint32_t>      _consumerVisibilitySalt{0};
+
         void fireMapElevationChanged();
         void fireTileUpdate( const TileKey& key, osg::Node* tile );
         void fireTilesRemoved(const std::vector<TileKey>& keys);

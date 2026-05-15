@@ -23,8 +23,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <future>
+#include <iomanip>
 #include <iterator>
+#include <sstream>
+#include <string>
+#include <unordered_set>
 
 using namespace osgEarth::Cesium;
 
@@ -35,7 +40,9 @@ namespace osgEarth { namespace Cesium
     struct ClampWorkResult
     {
         osg::ref_ptr<osg::Node> tileNode;
-        unsigned generation = 0;
+        /// Diagnostic: Terrain::getConsumerVisibilitySignature() at worker start / end of accept(visitor).
+        std::uint64_t terrainVisibilitySigBeforeJob = 0u;
+        std::uint64_t terrainVisibilitySigAfterJob = 0u;
         struct GeomUpdate
         {
             osg::observer_ptr<osg::Geometry> geom;
@@ -49,6 +56,42 @@ namespace osgEarth { namespace Cesium
 
 namespace
 {
+    constexpr const char* kClampTerrainSigKey = "clampTerrainSig";
+
+    inline void setClampTerrainSigUser(osg::Node* node, std::uint64_t sig)
+    {
+        if (!node)
+            return;
+        std::ostringstream oss;
+        oss << std::hex << std::setw(16) << std::setfill('0') << sig;
+        node->setUserValue(kClampTerrainSigKey, oss.str());
+    }
+
+    inline bool getClampTerrainSigUser(const osg::Node* node, std::uint64_t& out)
+    {
+        if (!node)
+            return false;
+        std::string s;
+        if (!node->getUserValue(kClampTerrainSigKey, s) || s.empty())
+            return false;
+        try
+        {
+            out = static_cast<std::uint64_t>(std::stoull(s, nullptr, 16));
+        }
+        catch (...)
+        {
+            return false;
+        }
+        return true;
+    }
+
+    inline void clearClampTerrainSigUser(osg::Node* node)
+    {
+        if (!node)
+            return;
+        node->setUserValue(kClampTerrainSigKey, std::string());
+    }
+
     double estimateViewZoomLevel(
         const osg::Vec3d& eye,
         double vfovRad,
@@ -82,6 +125,25 @@ namespace
             _progress = new ProgressCallback(nullptr, [&stopFlag]() {
                 return !stopFlag.load(std::memory_order_relaxed);
             });
+            if (!valid())
+            {
+                OE_WARN << "[AsyncClampVisitor] invalid SRS (wgs84/ecef); clamp visitor will produce no updates"
+                        << std::endl;
+            }
+        }
+
+        ~AsyncClampVisitor()
+        {
+            if (_drawablesSeen == 0u)
+                return;
+            OE_NOTICE << "[AsyncClampVisitor] drawables=" << _drawablesSeen
+                      << "  geomsProduced=" << _geomsProduced
+                      << "  vertsTotal=" << _vertsInUpdatedGeoms
+                      << "  skipNotGeometry=" << _skipNotGeometry
+                      << "  skipBadVertexArray=" << _skipBadVertexArray
+                      << "  skipInvertLocalToEcef=" << _skipInvertLocalToEcef
+                      << "  vertsUnchangedNoElev=" << _vertsUnchangedNoElev
+                      << std::endl;
         }
 
         bool valid() const { return _wgs84 && _ecef; }
@@ -100,17 +162,27 @@ namespace
         {
             if (stopped()) return;
 
+            ++_drawablesSeen;
             auto* geom = drawable.asGeometry();
             if (!geom)
+            {
+                ++_skipNotGeometry;
                 return;
+            }
             auto* verts = dynamic_cast<osg::Vec3Array*>(geom->getVertexArray());
             if (!verts || verts->empty())
+            {
+                ++_skipBadVertexArray;
                 return;
+            }
 
             const osg::Matrixd& localToEcef = _currentMatrix;
             osg::Matrixd ecefToLocal;
             if (!ecefToLocal.invert(localToEcef))
+            {
+                ++_skipInvertLocalToEcef;
                 return;
+            }
 
             const std::size_t nv = verts->size();
 
@@ -144,12 +216,14 @@ namespace
 
             // Build a NEW vertex array with clamped positions
             osg::ref_ptr<osg::Vec3Array> newVerts = new osg::Vec3Array(nv);
+            std::size_t unchangedNoElev = 0u;
             for (std::size_t i = 0; i < nv; ++i)
             {
                 const double ez = wgs84Pts[i].z();
                 if (!std::isfinite(ez) || ez < static_cast<double>(NO_DATA_VALUE) + 1.0)
                 {
                     (*newVerts)[i] = (*verts)[i];
+                    ++unchangedNoElev;
                     continue;
                 }
                 osg::Vec3d ecefClamped;
@@ -164,18 +238,30 @@ namespace
                 else
                 {
                     (*newVerts)[i] = (*verts)[i];
+                    ++unchangedNoElev;
                 }
             }
+            _vertsUnchangedNoElev += unchangedNoElev;
 
             ClampWorkResult::GeomUpdate update;
             update.geom = geom;
             update.newVerts = newVerts;
             _updates.push_back(std::move(update));
+            ++_geomsProduced;
+            _vertsInUpdatedGeoms += nv;
         }
 
         std::vector<ClampWorkResult::GeomUpdate> _updates;
 
     private:
+        unsigned _geomsProduced = 0u;
+        unsigned _drawablesSeen = 0u;
+        unsigned _skipNotGeometry = 0u;
+        unsigned _skipBadVertexArray = 0u;
+        unsigned _skipInvertLocalToEcef = 0u;
+        std::size_t _vertsInUpdatedGeoms = 0u;
+        std::size_t _vertsUnchangedNoElev = 0u;
+
         osg::Matrixd _currentMatrix;
         const osgEarth::SpatialReference* _wgs84 = nullptr;
         const osgEarth::SpatialReference* _ecef = nullptr;
@@ -321,7 +407,6 @@ CesiumTilesetNode::clampWorkerLoop()
     {
         osg::ref_ptr<osg::Node> tileNode;
         const osgEarth::Map* map = nullptr;
-        unsigned gen = 0;
         {
             std::unique_lock<std::mutex> lock(_clampMutex);
             _clampCV.wait(lock, [this]() {
@@ -335,7 +420,6 @@ CesiumTilesetNode::clampWorkerLoop()
             tileNode = _clampPending.front();
             _clampPending.pop_front();
             map = _workerMap;
-            gen = _clampGeneration.load(std::memory_order_acquire);
         }
 
         if (!tileNode.valid() || !map)
@@ -356,14 +440,27 @@ CesiumTilesetNode::clampWorkerLoop()
             continue;
         }
 
+        std::uint64_t sigBefore = 0u;
+        if (_cachedTerrain.valid())
+            sigBefore = _cachedTerrain->getConsumerVisibilitySignature();
+
         tileNode->accept(visitor);
 
+        std::uint64_t sigAfter = 0u;
+        if (_cachedTerrain.valid())
+            sigAfter = _cachedTerrain->getConsumerVisibilitySignature();
+
         if (visitor.stopped())
+        {
+            std::lock_guard<std::mutex> lock(_clampMutex);
+            _clampInFlight.erase(tileNode.get());
             break;
+        }
 
         auto result = std::make_shared<ClampWorkResult>();
         result->tileNode = tileNode;
-        result->generation = gen;
+        result->terrainVisibilitySigBeforeJob = sigBefore;
+        result->terrainVisibilitySigAfterJob = sigAfter;
         result->updates = std::move(visitor._updates);
 
         {
@@ -385,22 +482,16 @@ CesiumTilesetNode::applyClampResults()
     if (results.empty())
         return;
 
-    const unsigned currentGen = _clampGeneration.load(std::memory_order_acquire);
-    unsigned applied = 0, skippedGen = 0, skippedGeom = 0;
+    const std::uint64_t currentSig =
+        _cachedTerrain.valid() ? _cachedTerrain->getConsumerVisibilitySignature() : 0u;
+    unsigned applied = 0, skippedGeom = 0;
+    std::unordered_set<osg::Node*> requeueTiles;
 
     for (auto& result : results)
     {
         {
             std::lock_guard<std::mutex> lock(_clampMutex);
             _clampInFlight.erase(result->tileNode.get());
-        }
-
-        if (result->generation != currentGen)
-        {
-            ++skippedGen;
-            OE_NOTICE << "[CesiumClamp] SKIP stale result  gen=" << result->generation
-                      << "  currentGen=" << currentGen << std::endl;
-            continue;
         }
 
         unsigned geomCount = 0;
@@ -411,6 +502,7 @@ CesiumTilesetNode::applyClampResults()
             {
                 geom->setVertexArray(update.newVerts.get());
                 geom->dirtyBound();
+                geom->dirtyGLObjects();
                 ++geomCount;
             }
             else
@@ -418,20 +510,60 @@ CesiumTilesetNode::applyClampResults()
                 ++skippedGeom;
             }
         }
-        result->tileNode->setUserValue("clampGeneration", result->generation);
-        ++applied;
-        OE_NOTICE << "[CesiumClamp] APPLIED  tile=" << result->tileNode.get()
-                  << "  gen=" << result->generation
-                  << "  geoms=" << geomCount
-                  << "  updates=" << result->updates.size() << std::endl;
+
+        const std::uint64_t nowSig =
+            _cachedTerrain.valid() ? _cachedTerrain->getConsumerVisibilitySignature() : 0u;
+
+        // Always commit vertex work from this job (never discard completed work). If terrain signature
+        // moved again before we landed on the main thread, queue another pass so a later apply
+        // always catches up — even if this tile drops out of tilesToRenderThisFrame briefly.
+        if (!result->updates.empty() && geomCount > 0u)
+        {
+            setClampTerrainSigUser(result->tileNode.get(), result->terrainVisibilitySigAfterJob);
+            ++applied;
+            OE_NOTICE << "[CesiumClamp] APPLIED  tile=" << result->tileNode.get()
+                      << "  terrainSigSample=0x" << std::hex << result->terrainVisibilitySigAfterJob << std::dec
+                      << "  terrainSigNow=0x" << std::hex << nowSig << std::dec
+                      << "  geoms=" << geomCount
+                      << "  updates=" << result->updates.size() << std::endl;
+            if (result->terrainVisibilitySigAfterJob != nowSig && result->tileNode.valid())
+                requeueTiles.insert(result->tileNode.get());
+        }
+        else
+        {
+            clearClampTerrainSigUser(result->tileNode.get());
+            if (result->tileNode.valid())
+                requeueTiles.insert(result->tileNode.get());
+        }
     }
 
-    if (applied > 0 || skippedGen > 0)
+    if (!requeueTiles.empty())
+    {
+        bool wake = false;
+        {
+            std::lock_guard<std::mutex> lock(_clampMutex);
+            for (osg::Node* n : requeueTiles)
+            {
+                if (!n || _clampInFlight.count(n) != 0u)
+                    continue;
+                _clampPending.push_back(n);
+                _clampInFlight.insert(n);
+                wake = true;
+            }
+        }
+        if (wake)
+        {
+            ensureClampThread();
+            _clampCV.notify_one();
+        }
+    }
+
+    if (applied > 0 || skippedGeom > 0 || !requeueTiles.empty())
     {
         OE_NOTICE << "[CesiumClamp] applyClampResults: applied=" << applied
-                  << "  skippedGen=" << skippedGen
                   << "  skippedGeom=" << skippedGeom
-                  << "  currentGen=" << currentGen
+                  << "  requeuedTiles=" << requeueTiles.size()
+                  << "  terrainSigNow=0x" << std::hex << currentSig << std::dec
                   << "  totalResults=" << results.size() << std::endl;
     }
 }
@@ -447,32 +579,15 @@ CesiumTilesetNode::installTerrainCallback()
     if (!mapNode || !mapNode->getTerrain())
         return;
     _cachedTerrain = mapNode->getTerrain();
-    _lastElevationRevision = _cachedTerrain->getElevationRevision();
     _terrainCallback = new TerrainCallbackAdapter<CesiumTilesetNode>(this);
     _cachedTerrain->addTerrainCallback(_terrainCallback.get());
     _terrainCallbackInstalled = true;
 }
 
 void
-CesiumTilesetNode::onTileUpdate(const TileKey& /*key*/, osg::Node* /*tile*/, TerrainCallbackContext& context)
+CesiumTilesetNode::onTileUpdate(const TileKey& /*key*/, osg::Node* /*tile*/, TerrainCallbackContext& /*context*/)
 {
-    if (const Terrain* terrain = context.getTerrain())
-        _lastElevationRevision = terrain->getElevationRevision();
-    _terrainDirty.store(true, std::memory_order_release);
-}
-
-bool
-CesiumTilesetNode::pollTerrainChanged()
-{
-    if (!_cachedTerrain.valid())
-        return false;
-    unsigned rev = _cachedTerrain->getElevationRevision();
-    if (rev != _lastElevationRevision)
-    {
-        _lastElevationRevision = rev;
-        return true;
-    }
-    return false;
+    // CPU clamp re-queue: CULL compares Terrain::getConsumerVisibilitySignature() to per-tile clampTerrainSig.
 }
 
 // ---- Traversal ---------------------------------------------------------------
@@ -511,9 +626,6 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         vfov = osg::DegreesToRadians(vfov);
         double hfov = 2 * atan(tan(vfov / 2) * (ar));
 
-        if (_clampToGround && pollTerrainChanged())
-            invalidateClampedTiles();
-
         if (_minimumRenderableLevel >= 0)
         {
             const double viewZoom = estimateViewZoomLevel(osgEye, vfov, cv->getViewport()->height());
@@ -550,11 +662,12 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
                 {
                     if (_clampToGround)
                     {
-                        unsigned tileClampGen = 0;
-                        const bool hasClampGen =
-                            result->node->getUserValue("clampGeneration", tileClampGen);
-                        unsigned curGen = _clampGeneration.load(std::memory_order_acquire);
-                        if (!hasClampGen || tileClampGen != curGen)
+                        const std::uint64_t curSig =
+                            _cachedTerrain.valid() ? _cachedTerrain->getConsumerVisibilitySignature() : 0u;
+                        std::uint64_t appliedSig = 0u;
+                        const bool hasAppliedSig = getClampTerrainSigUser(result->node.get(), appliedSig);
+                        const bool needsClamp = !hasAppliedSig || appliedSig != curSig;
+                        if (needsClamp)
                         {
                             std::lock_guard<std::mutex> lock(_clampMutex);
                             if (_clampInFlight.find(result->node.get()) == _clampInFlight.end())
@@ -597,9 +710,6 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         {
             installTerrainCallback();
 
-            if (_terrainDirty.exchange(false, std::memory_order_acq_rel))
-                invalidateClampedTiles();
-
             applyClampResults();
         }
 
@@ -634,5 +744,12 @@ osg::BoundingSphere CesiumTilesetNode::computeBound() const
 void
 CesiumTilesetNode::invalidateClampedTiles()
 {
-    _clampGeneration.fetch_add(1, std::memory_order_release);
+    // Force re-clamp: clear per-tile signature so CULL re-queues against current terrain visibility signature.
+    const unsigned n = getNumChildren();
+    for (unsigned i = 0; i < n; ++i)
+    {
+        osg::Node* ch = getChild(i);
+        if (ch)
+            clearClampTerrainSigUser(ch);
+    }
 }
