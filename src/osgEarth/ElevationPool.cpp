@@ -79,8 +79,8 @@ ElevationPool::setExternalTerrainSamples(
         }
 
         const double span = std::max(maxX - minX, maxY - minY);
-        next.cellSize = std::max(span / 512.0, 0.00001);
-        const double maxSearchDistance = next.cellSize * 2.5;
+        next.cellSize = std::max(span / 256.0, 0.00002);
+        const double maxSearchDistance = next.cellSize * 6.0;
         next.maxSearchDistance2 = maxSearchDistance * maxSearchDistance;
         next.grid.reserve(next.samples.size());
 
@@ -111,9 +111,9 @@ ElevationPool::sampleExternalTerrain(double x, double y, double& z)
     double bestDistance2 = _externalTerrain.maxSearchDistance2;
     bool found = false;
 
-    for (int dy = -2; dy <= 2; ++dy)
+    for (int dy = -6; dy <= 6; ++dy)
     {
-        for (int dx = -2; dx <= 2; ++dx)
+        for (int dx = -6; dx <= 6; ++dx)
         {
             auto gridItr = _externalTerrain.grid.find(terrainGridKey(cellX + dx, cellY + dy));
             if (gridItr == _externalTerrain.grid.end())
@@ -973,9 +973,9 @@ ElevationPool::sampleMapCoordsFromCache(
         double bestDistance2 = _externalTerrain.maxSearchDistance2;
         bool found = false;
 
-        for (int dy = -2; dy <= 2; ++dy)
+        for (int dy = -6; dy <= 6; ++dy)
         {
-            for (int dx = -2; dx <= 2; ++dx)
+            for (int dx = -6; dx <= 6; ++dx)
             {
                 auto gridItr = _externalTerrain.grid.find(terrainGridKey(cellX + dx, cellY + dy));
                 if (gridItr == _externalTerrain.grid.end())

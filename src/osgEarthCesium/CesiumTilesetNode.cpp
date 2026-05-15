@@ -401,7 +401,7 @@ namespace
                 }
                 for (std::size_t i = 0; i < chunk.size(); ++i)
                 {
-                    mapPts[off + i].z() = chunk[i].z();
+                    mapPts[off + i] = chunk[i];
                     const double elevation = chunk[i].z();
                     if (std::isfinite(elevation) && elevation != static_cast<double>(NO_DATA_VALUE))
                     {
@@ -445,13 +445,21 @@ namespace
             newVerts->setBinding(binding);
             newVerts->setNormalize(normalize);
             newVerts->setDataVariance(osg::Object::DYNAMIC);
+            std::vector<osg::Vec3> fallbackVerts;
+            if (auto* currentVerts = dynamic_cast<osg::Vec3Array*>(geom->getVertexArray()))
+            {
+                if (currentVerts->size() == nv)
+                    fallbackVerts.assign(currentVerts->begin(), currentVerts->end());
+            }
+            if (fallbackVerts.size() != nv)
+                fallbackVerts = sourceVerts;
             std::size_t unchangedNoElev = 0u;
             for (std::size_t i = 0; i < nv; ++i)
             {
                 const double ez = mapPts[i].z();
                 if (!std::isfinite(ez) || ez == static_cast<double>(NO_DATA_VALUE))
                 {
-                    (*newVerts)[i] = sourceVerts[i];
+                    (*newVerts)[i] = fallbackVerts[i];
                     ++unchangedNoElev;
                     continue;
                 }
@@ -468,7 +476,7 @@ namespace
                 }
                 else
                 {
-                    (*newVerts)[i] = sourceVerts[i];
+                    (*newVerts)[i] = fallbackVerts[i];
                     ++unchangedNoElev;
                 }
             }
@@ -787,23 +795,7 @@ CesiumTilesetNode::applyClampResults()
     for (auto& result : results)
     {
         const unsigned nowGen = _clampGeneration.load(std::memory_order_acquire);
-        if (result->clampGeneration != nowGen)
-        {
-            {
-                std::lock_guard<std::mutex> lock(_clampMutex);
-                _clampInFlight.erase(result->tileNode.get());
-            }
-            if (result->tileNode.valid())
-            {
-                requeueTiles.insert(result->tileNode.get());
-                auto item = std::make_shared<ClampWorkItem>();
-                item->tileNode = result->tileNode;
-                item->sources = result->sources;
-                requeueItems.push_back(std::move(item));
-                clearClampElevRevUser(result->tileNode.get());
-            }
-            continue;
-        }
+        const bool generationMismatch = result->clampGeneration != nowGen;
 
         {
             std::lock_guard<std::mutex> lock(_clampMutex);
@@ -855,7 +847,7 @@ CesiumTilesetNode::applyClampResults()
                       << std::dec
                       << "  geoms=" << geomCount
                       << "  updates=" << result->updates.size() << std::endl;
-            if (result->terrainElevationRevAfterJob != nowElevRev && result->tileNode.valid())
+            if ((generationMismatch || result->terrainElevationRevAfterJob != nowElevRev) && result->tileNode.valid())
             {
                 requeueTiles.insert(result->tileNode.get());
                 auto item = std::make_shared<ClampWorkItem>();
@@ -868,13 +860,21 @@ CesiumTilesetNode::applyClampResults()
         {
             if (result->tileNode.valid())
             {
-                setClampElevRevUser(result->tileNode.get(), result->terrainElevationRevAfterJob);
                 std::ostringstream diag;
                 diag << "[CesiumClamp] NO_CACHED_ELEV tile=" << result->tileNode.get()
                      << " elevRevSample=" << result->terrainElevationRevAfterJob
                      << " elevRevNow=" << nowElevRev
                      << " sources=" << result->sources.size();
                 writeClampDiagnostic(diag.str());
+
+                if (generationMismatch)
+                {
+                    requeueTiles.insert(result->tileNode.get());
+                    auto item = std::make_shared<ClampWorkItem>();
+                    item->tileNode = result->tileNode;
+                    item->sources = result->sources;
+                    requeueItems.push_back(std::move(item));
+                }
             }
         }
     }
@@ -1012,10 +1012,15 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         Cesium3DTilesSelection::Tileset* tileset = (Cesium3DTilesSelection::Tileset*)_tileset;
         auto updates = tileset->updateView(viewStates);
 
+        if (_clampToGround)
+            applyClampResults();
+
         osg::Group* parent = tileParent();
-        parent->removeChildren(0, parent->getNumChildren());
 
         bool needsClampQueue = false;
+        bool hasDeferredUnclampedTile = false;
+        std::vector<osg::ref_ptr<osg::Node>> displayNodes;
+        std::unordered_set<osg::Node*> displayNodeSet;
 
         for (auto tile : updates.tilesToRenderThisFrame)
         {
@@ -1047,10 +1052,36 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
                                 }
                             }
                         }
+
+                        if (!hasRev)
+                        {
+                            hasDeferredUnclampedTile = true;
+                            continue;
+                        }
                     }
-                    parent->addChild(result->node.get());
+                    displayNodes.push_back(result->node.get());
+                    displayNodeSet.insert(result->node.get());
                 }
             }
+        }
+
+        if (_clampToGround && hasDeferredUnclampedTile)
+        {
+            const unsigned previousCount = parent->getNumChildren();
+            for (unsigned i = 0u; i < previousCount; ++i)
+            {
+                osg::Node* previous = parent->getChild(i);
+                unsigned previousRev = 0u;
+                if (previous && getClampElevRevUser(previous, previousRev) && displayNodeSet.insert(previous).second)
+                    displayNodes.push_back(previous);
+            }
+        }
+
+        parent->removeChildren(0, parent->getNumChildren());
+        for (const auto& node : displayNodes)
+        {
+            if (node.valid())
+                parent->addChild(node.get());
         }
 
         if (_clampToGround)
@@ -1134,12 +1165,7 @@ void
 CesiumTilesetNode::invalidateClampedTiles()
 {
     _clampGeneration.fetch_add(1u, std::memory_order_acq_rel);
-    // Force re-clamp: clear per-tile elevation revision stamp so CULL re-queues for resample.
-    const unsigned n = getNumChildren();
-    for (unsigned i = 0; i < n; ++i)
-    {
-        osg::Node* ch = getChild(i);
-        if (ch)
-            clearClampElevRevUser(ch);
-    }
+    // Keep the previous elevation revision stamp. Traversal compares it against the
+    // current terrain revision, so stale clamped geometry stays visible while the
+    // replacement clamp job is running.
 }
