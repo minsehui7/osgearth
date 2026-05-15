@@ -92,7 +92,7 @@ namespace
 Registry::Registry() :
     _terrainEngineDriver("rex"),
     _cacheDriver("filesystem"),
-    _scriptEngineDriver("qjs"),
+    _scriptEngineDriver("duktape"),
     _overrideCachePolicyInitialized(false),
     _maxVertsPerDrawable(UINT_MAX),
     _maxImageDimension(INT_MAX)

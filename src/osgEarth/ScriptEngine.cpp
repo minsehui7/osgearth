@@ -7,6 +7,7 @@
 #include <osgEarth/Registry>
 #include <osgEarth/Feature>
 #include <osgDB/ReadFile>
+#include <algorithm>
 #include <mutex>
 
 using namespace osgEarth;
@@ -132,39 +133,62 @@ ScriptEngineFactory::createWithProfile(const Script& script, const std::string& 
 ScriptEngine*
 ScriptEngineFactory::create( const ScriptEngineOptions& options, bool quiet)
 {
-    osg::ref_ptr<ScriptEngine> scriptEngine;
-
-    if ( !options.getDriver().empty() )
-    {
-        if ( std::find(instance()->_failedDrivers.begin(), instance()->_failedDrivers.end(), options.getDriver()) == instance()->_failedDrivers.end() )
-        {
-            std::string driverExt = std::string("osgearth_scriptengine_") + options.getDriver();
-
-            osg::ref_ptr<osgDB::Options> rwopts = Registry::instance()->cloneOrCreateOptions();
-            rwopts->setPluginData( SCRIPT_ENGINE_OPTIONS_TAG, (void*)&options );
-            auto rw = osgDB::Registry::instance()->getReaderWriterForExtension(driverExt);
-            if (rw)
-            {
-                osg::ref_ptr<osg::Object> object = rw->readObject("." + driverExt, rwopts.get()).getObject();
-                scriptEngine = dynamic_cast<ScriptEngine*>(object.release());
-            }
-            if (!scriptEngine.valid())
-            {
-                if (!quiet)
-                    OE_WARN << "FAIL, unable to load ScriptEngine driver for \"" << options.getDriver() << "\"" << std::endl;
-
-                instance()->_failedDrivers.push_back(options.getDriver());
-            }
-        }
-        else
-        {
-            //OE_WARN << "Skipping previously failed ScriptEngine driver \"" << options.getDriver() << "\"" << std::endl;
-        }
-    }
-    else
+    if (options.getDriver().empty())
     {
         if (!quiet)
             OE_WARN << LC << "FAIL, illegal null driver specification" << std::endl;
+        return nullptr;
+    }
+
+    const std::string& requested = options.getDriver();
+    auto& failed = instance()->_failedDrivers;
+    if (std::find(failed.begin(), failed.end(), requested) != failed.end())
+        return nullptr;
+
+    auto tryLoad = [](const ScriptEngineOptions& opts) -> osg::ref_ptr<ScriptEngine>
+    {
+        osg::ref_ptr<ScriptEngine> se;
+        const std::string driverExt = std::string("osgearth_scriptengine_") + opts.getDriver();
+        osg::ref_ptr<osgDB::Options> rwopts = Registry::instance()->cloneOrCreateOptions();
+        rwopts->setPluginData(SCRIPT_ENGINE_OPTIONS_TAG, (void*)&opts);
+        osgDB::ReaderWriter* rw =
+            osgDB::Registry::instance()->getReaderWriterForExtension(driverExt);
+        if (rw)
+        {
+            osg::ref_ptr<osg::Object> object = rw->readObject("." + driverExt, rwopts.get()).getObject();
+            se = dynamic_cast<ScriptEngine*>(object.release());
+        }
+        return se;
+    };
+
+    auto driverFailed = [&](const std::string& d) {
+        return std::find(failed.begin(), failed.end(), d) != failed.end();
+    };
+
+    osg::ref_ptr<ScriptEngine> scriptEngine = tryLoad(options);
+
+    if (!scriptEngine.valid() && requested == "javascript_qjs" && !driverFailed("javascript_duktape"))
+    {
+        ScriptEngineOptions alt(options);
+        alt.setDriver("javascript_duktape");
+        scriptEngine = tryLoad(alt);
+        if (scriptEngine.valid())
+            Registry::instance()->setScriptEngineDriverName("duktape");
+    }
+    else if (!scriptEngine.valid() && requested == "javascript_duktape" && !driverFailed("javascript_qjs"))
+    {
+        ScriptEngineOptions alt(options);
+        alt.setDriver("javascript_qjs");
+        scriptEngine = tryLoad(alt);
+        if (scriptEngine.valid())
+            Registry::instance()->setScriptEngineDriverName("qjs");
+    }
+
+    if (!scriptEngine.valid())
+    {
+        if (!quiet)
+            OE_WARN << "FAIL, unable to load ScriptEngine driver for \"" << requested << "\"" << std::endl;
+        failed.push_back(requested);
     }
 
     return scriptEngine.release();
