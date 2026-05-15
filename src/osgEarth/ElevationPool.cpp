@@ -12,6 +12,10 @@
 #include <osgEarth/Progress>
 #include <osgEarth/Notify>
 
+#include <atomic>
+#include <cmath>
+#include <fstream>
+#include <sstream>
 #include <thread>
 
 using namespace osgEarth;
@@ -37,6 +41,101 @@ ElevationPool::getMapSRS() const
 namespace
 {
     using MaxLevelIndex = RTree<unsigned, double, 2>;
+
+    long long terrainGridKey(long long x, long long y)
+    {
+        return (x << 32) ^ (y & 0xffffffffLL);
+    }
+
+    void writeCacheDiagnostic(const std::string& line)
+    {
+        std::ofstream out("logs/cesium-clamp-diagnostics.log", std::ios::app);
+        if (out.is_open())
+            out << line << std::endl;
+    }
+}
+
+void
+ElevationPool::setExternalTerrainSamples(
+    std::vector<ExternalTerrainSample>&& samples,
+    unsigned generation)
+{
+    ExternalTerrainCache next;
+    next.samples = std::move(samples);
+    next.generation = generation;
+
+    if (!next.samples.empty())
+    {
+        double minX = next.samples.front().mapPoint.x();
+        double maxX = minX;
+        double minY = next.samples.front().mapPoint.y();
+        double maxY = minY;
+        for (const auto& sample : next.samples)
+        {
+            minX = std::min(minX, sample.mapPoint.x());
+            maxX = std::max(maxX, sample.mapPoint.x());
+            minY = std::min(minY, sample.mapPoint.y());
+            maxY = std::max(maxY, sample.mapPoint.y());
+        }
+
+        const double span = std::max(maxX - minX, maxY - minY);
+        next.cellSize = std::max(span / 512.0, 0.00001);
+        const double maxSearchDistance = next.cellSize * 2.5;
+        next.maxSearchDistance2 = maxSearchDistance * maxSearchDistance;
+        next.grid.reserve(next.samples.size());
+
+        for (unsigned i = 0u; i < next.samples.size(); ++i)
+        {
+            const auto& point = next.samples[i].mapPoint;
+            const long long cellX = static_cast<long long>(std::floor(point.x() / next.cellSize));
+            const long long cellY = static_cast<long long>(std::floor(point.y() / next.cellSize));
+            next.grid[terrainGridKey(cellX, cellY)].push_back(i);
+        }
+    }
+
+    ScopedWriteLock lock(_externalTerrainMutex);
+    _externalTerrain = std::move(next);
+}
+
+bool
+ElevationPool::sampleExternalTerrain(double x, double y, double& z)
+{
+    ScopedReadLock lock(_externalTerrainMutex, std::try_to_lock);
+    if (!lock.owns_lock() || _externalTerrain.samples.empty())
+        return false;
+
+    const double cellSize = _externalTerrain.cellSize;
+    const long long cellX = static_cast<long long>(std::floor(x / cellSize));
+    const long long cellY = static_cast<long long>(std::floor(y / cellSize));
+
+    double bestDistance2 = _externalTerrain.maxSearchDistance2;
+    bool found = false;
+
+    for (int dy = -2; dy <= 2; ++dy)
+    {
+        for (int dx = -2; dx <= 2; ++dx)
+        {
+            auto gridItr = _externalTerrain.grid.find(terrainGridKey(cellX + dx, cellY + dy));
+            if (gridItr == _externalTerrain.grid.end())
+                continue;
+
+            for (unsigned sampleIndex : gridItr->second)
+            {
+                const osg::Vec3d& point = _externalTerrain.samples[sampleIndex].mapPoint;
+                const double sx = point.x() - x;
+                const double sy = point.y() - y;
+                const double distance2 = sx * sx + sy * sy;
+                if (distance2 < bestDistance2)
+                {
+                    bestDistance2 = distance2;
+                    z = point.z();
+                    found = true;
+                }
+            }
+        }
+    }
+
+    return found;
 }
 
 ElevationPool::~ElevationPool()
@@ -491,7 +590,31 @@ ElevationPool::sampleMapCoords(
     if (_mapData.map.lock(map) == false || map->getProfile() == NULL)
         return -1;
 
-    auto snapshot = snapshotMapData(ws);
+    MapData snapshot;
+    {
+        ScopedWriteLock exclusive(_mapDataMutex, std::try_to_lock);
+        if (!exclusive.owns_lock())
+        {
+            for (auto i = begin; i != end; ++i)
+                i->z() = failValue;
+            return 0;
+        }
+
+        std::size_t hash = _revision.load(std::memory_order_acquire);
+        for (auto& layer : _mapData.layers)
+            hash = hash_value_unsigned(hash, layer->getUID(), layer->getRevision());
+        _mapData.hash = hash;
+
+        snapshot = _mapData;
+        if (ws && !ws->_elevationLayers.empty())
+        {
+            snapshot.layers = ws->_elevationLayers;
+            hash = _revision.load(std::memory_order_acquire);
+            for (auto& layer : ws->_elevationLayers)
+                hash = hash_value_unsigned(hash, layer->getUID(), layer->getRevision());
+            snapshot.hash = hash;
+        }
+    }
 
     if (snapshot.layers.empty())
     {
@@ -749,6 +872,266 @@ ElevationPool::sampleMapCoords(
             p.z() = failValue;
         }
 
+        if (p.z() != failValue)
+            ++count;
+    }
+
+    return count;
+}
+
+int
+ElevationPool::sampleMapCoordsFromCache(
+    std::vector<osg::Vec3d>::iterator begin,
+    std::vector<osg::Vec3d>::iterator end,
+    WorkingSet* ws,
+    float failValue)
+{
+    OE_PROFILING_ZONE;
+
+    if (begin == end)
+        return -1;
+
+    osg::ref_ptr<const Map> map;
+    if (_mapData.map.lock(map) == false || map->getProfile() == nullptr)
+        return -1;
+
+    auto snapshot = snapshotMapData(ws);
+
+    if (snapshot.layers.empty())
+    {
+        for (auto i = begin; i != end; ++i)
+            i->z() = failValue;
+        return 0;
+    }
+
+    const Profile* profile = map->getProfile();
+    double u, v;
+    int count = 0;
+
+    Envelope::QuickCache quickCache;
+
+    auto getSnapshotLOD = [&snapshot](double x, double y) -> int
+    {
+        double point[2] = { x, y };
+        int maxiestMaxLevel = -1;
+        int noDataExtentFallbackLevel = -1;
+
+        for (auto& layerItr : snapshot.layers)
+        {
+            auto itr = snapshot.index.find(layerItr.get());
+            if (itr != snapshot.index.end())
+            {
+                MaxLevelIndex* index = static_cast<MaxLevelIndex*>(itr->second);
+                index->Search(point, point, [&](const unsigned& level)
+                    {
+                        maxiestMaxLevel = std::max(maxiestMaxLevel, (int)level);
+                        return RTREE_KEEP_SEARCHING;
+                    });
+
+                if (maxiestMaxLevel < 0 && layerItr->getDataExtentsSize() == 0)
+                {
+                    unsigned maxLevel = layerItr->getMaxDataLevel();
+                    if (snapshot.mapProfile.valid() && layerItr->getProfile())
+                        maxLevel = snapshot.mapProfile->getEquivalentLOD(layerItr->getProfile(), maxLevel);
+                    maxLevel = std::min(maxLevel, static_cast<unsigned>(std::numeric_limits<int>::max()));
+                    noDataExtentFallbackLevel = std::max(noDataExtentFallbackLevel, static_cast<int>(maxLevel));
+                }
+            }
+        }
+
+        return maxiestMaxLevel >= 0 ? maxiestMaxLevel : noDataExtentFallbackLevel;
+    };
+
+    auto findCachedRaster = [this](const Internal::RevElevationKey& key, osg::ref_ptr<ElevationTile>& output) -> bool
+    {
+        ScopedReadLock lock(_globalLUTMutex, std::try_to_lock);
+        if (!lock.owns_lock())
+            return false;
+
+        auto i = _globalLUT.find(key);
+        if (i != _globalLUT.end())
+            i->second.lock(output);
+
+        return output.valid();
+    };
+
+    static std::atomic<int> diagnosticBudget{ 8 };
+
+    ScopedReadLock externalTerrainLock(_externalTerrainMutex, std::try_to_lock);
+    const bool externalTerrainAvailable =
+        externalTerrainLock.owns_lock() && !_externalTerrain.samples.empty();
+
+    auto sampleExternalTerrainLocked = [this, externalTerrainAvailable](double x, double y, double& z) -> bool
+    {
+        if (!externalTerrainAvailable)
+            return false;
+
+        const double cellSize = _externalTerrain.cellSize;
+        const long long cellX = static_cast<long long>(std::floor(x / cellSize));
+        const long long cellY = static_cast<long long>(std::floor(y / cellSize));
+
+        double bestDistance2 = _externalTerrain.maxSearchDistance2;
+        bool found = false;
+
+        for (int dy = -2; dy <= 2; ++dy)
+        {
+            for (int dx = -2; dx <= 2; ++dx)
+            {
+                auto gridItr = _externalTerrain.grid.find(terrainGridKey(cellX + dx, cellY + dy));
+                if (gridItr == _externalTerrain.grid.end())
+                    continue;
+
+                for (unsigned sampleIndex : gridItr->second)
+                {
+                    const osg::Vec3d& point = _externalTerrain.samples[sampleIndex].mapPoint;
+                    const double sx = point.x() - x;
+                    const double sy = point.y() - y;
+                    const double distance2 = sx * sx + sy * sy;
+                    if (distance2 < bestDistance2)
+                    {
+                        bestDistance2 = distance2;
+                        z = point.z();
+                        found = true;
+                    }
+                }
+            }
+        }
+
+        return found;
+    };
+
+    bool useExternalTerrainOnly = false;
+    if (externalTerrainAvailable)
+    {
+        ScopedReadLock lutLock(_globalLUTMutex, std::try_to_lock);
+        useExternalTerrainOnly = lutLock.owns_lock() && _globalLUT.empty();
+    }
+
+    for (auto iter = begin; iter != end; ++iter)
+    {
+        osg::Vec3d& p = *iter;
+        p.z() = failValue;
+
+        if (useExternalTerrainOnly)
+        {
+            double externalZ = 0.0;
+            if (sampleExternalTerrainLocked(p.x(), p.y(), externalZ))
+            {
+                p.z() = externalZ;
+                ++count;
+            }
+            continue;
+        }
+
+        const int lod = getSnapshotLOD(p.x(), p.y());
+        if (lod < 0)
+            continue;
+
+        Internal::RevElevationKey key;
+        key._hash = snapshot.hash;
+        key._tilekey = profile->createTileKey(p.x(), p.y(), lod);
+
+        if (diagnosticBudget.load() > 0)
+        {
+            osg::ref_ptr<ElevationTile> exactRaster;
+            std::size_t lutSize = 0u;
+            std::size_t sameTileEntries = 0u;
+            std::size_t sameTileLive = 0u;
+            std::size_t firstSameHash = 0u;
+            std::string firstKey;
+            bool exactHit = false;
+            bool lockOwned = false;
+
+            {
+                ScopedReadLock lock(_globalLUTMutex, std::try_to_lock);
+                lockOwned = lock.owns_lock();
+                if (lockOwned)
+                {
+                    lutSize = _globalLUT.size();
+                    auto exact = _globalLUT.find(key);
+                    exactHit = exact != _globalLUT.end();
+                    if (exactHit)
+                        exact->second.lock(exactRaster);
+
+                    for (const auto& entry : _globalLUT)
+                    {
+                        if (firstKey.empty())
+                            firstKey = entry.first._tilekey.str();
+
+                        if (entry.first._tilekey == key._tilekey)
+                        {
+                            ++sameTileEntries;
+                            if (firstSameHash == 0u)
+                                firstSameHash = entry.first._hash;
+
+                            osg::ref_ptr<ElevationTile> candidate;
+                            entry.second.lock(candidate);
+                            if (candidate.valid())
+                                ++sameTileLive;
+                        }
+                    }
+                }
+            }
+
+            if (diagnosticBudget.fetch_sub(1) > 0)
+            {
+                std::ostringstream buf;
+                buf << "[ElevationPoolCache] sample point x=" << p.x()
+                    << " y=" << p.y()
+                    << " lod=" << lod
+                    << " key=" << key._tilekey.str()
+                    << " hash=" << key._hash
+                    << " layers=" << snapshot.layers.size()
+                    << " lutLock=" << (lockOwned ? 1 : 0)
+                    << " lutSize=" << lutSize
+                    << " exactHit=" << (exactHit ? 1 : 0)
+                    << " exactLive=" << (exactRaster.valid() ? 1 : 0)
+                    << " sameTileEntries=" << sameTileEntries
+                    << " sameTileLive=" << sameTileLive
+                    << " firstSameHash=" << firstSameHash
+                    << " firstKey=" << firstKey;
+                writeCacheDiagnostic(buf.str());
+            }
+        }
+
+        osg::ref_ptr<ElevationTile> raster;
+        for (TileKey candidate = key._tilekey; candidate.valid(); candidate.makeParent())
+        {
+            key._tilekey = candidate;
+
+            auto cached = quickCache.find(key);
+            if (cached != quickCache.end())
+            {
+                raster = cached->second;
+            }
+            else
+            {
+                findCachedRaster(key, raster);
+                quickCache[key] = raster.get();
+            }
+
+            if (raster.valid())
+                break;
+        }
+
+        if (!raster.valid())
+        {
+            double externalZ = 0.0;
+            if (sampleExternalTerrainLocked(p.x(), p.y(), externalZ))
+            {
+                p.z() = externalZ;
+                ++count;
+            }
+            continue;
+        }
+
+        u = (p.x() - raster->getExtent().xMin()) / raster->getExtent().width();
+        v = (p.y() - raster->getExtent().yMin()) / raster->getExtent().height();
+
+        u = clamp(u, 0.0, 1.0);
+        v = clamp(v, 0.0, 1.0);
+
+        p.z() = raster->getRawElevationUV(u, v);
         if (p.z() != failValue)
             ++count;
     }

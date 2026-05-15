@@ -43,12 +43,22 @@ namespace osgEarth {
             bool clampToGround = false;
         };
 
+        struct ClampGeometrySource
+        {
+            osg::ref_ptr<osg::Geometry> geom;
+            std::vector<osg::Vec3> sourceVerts;
+            osg::Array::Binding binding = osg::Array::BIND_UNDEFINED;
+            bool normalize = false;
+            osg::Matrixd localToEcef;
+        };
+
         class LoadThreadResult
         {
         public:
             LoadThreadResult();
             ~LoadThreadResult();
             osg::ref_ptr< osg::Node > node;
+            std::vector<ClampGeometrySource> clampGeometries;
             TilesetRenderStyleOptions renderStyle;
             bool hasRenderStyle = false;
         };
@@ -59,6 +69,7 @@ namespace osgEarth {
             MainThreadResult();
             ~MainThreadResult();
             osg::ref_ptr< osg::Node > node;
+            std::vector<ClampGeometrySource> clampGeometries;
         };
         
 

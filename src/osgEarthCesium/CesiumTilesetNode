@@ -26,6 +26,7 @@ namespace osgEarth { namespace Cesium
     using namespace osgEarth;
 
     struct ClampWorkResult;
+    struct ClampWorkItem;
 
     class OSGEARTHCESIUM_EXPORT CesiumTilesetNode : public osg::Group
     {
@@ -64,10 +65,10 @@ namespace osgEarth { namespace Cesium
         int _minimumRenderableLevel = -1;
         bool _clampToGround = false;
 
-        // Async CPU clamping -- all ElevationQuery work happens on _clampThread.
+        // Async CPU clamping. Terrain sampling only reads already cached elevation data.
         std::mutex _clampMutex;
         std::condition_variable _clampCV;
-        std::deque<osg::ref_ptr<osg::Node>> _clampPending;
+        std::deque<std::shared_ptr<ClampWorkItem>> _clampPending;
         std::unordered_set<osg::Node*> _clampInFlight;
         const osgEarth::Map* _workerMap = nullptr;
 
@@ -76,6 +77,12 @@ namespace osgEarth { namespace Cesium
 
         std::thread _clampThread;
         std::atomic<bool> _clampRunning{false};
+
+        /// Bumped when terrain tile data changes so in-flight clamp jobs can be discarded safely.
+        std::atomic<unsigned> _clampGeneration{0};
+        /// Bumped from TerrainCallback; drained on traversal so terrain updates are never collapsed into a bool.
+        std::atomic<unsigned> _terrainClampGeneration{0};
+        unsigned _processedTerrainClampGeneration = 0u;
 
         osg::ref_ptr<TerrainCallback> _terrainCallback;
         bool _terrainCallbackInstalled = false;

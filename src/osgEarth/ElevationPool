@@ -27,6 +27,11 @@ namespace osgEarth
         using Pointer = osg::ref_ptr<ElevationTile>;
         using WeakLUT = std::unordered_map<Internal::RevElevationKey, WeakPointer>;
 
+        struct ExternalTerrainSample
+        {
+            osg::Vec3d mapPoint;
+        };
+
     public:
 
         //! User data that a client can use to speed up queries in
@@ -198,6 +203,25 @@ namespace osgEarth
             ProgressCallback* progress,
             float failValue = NO_DATA_VALUE);
 
+        //! Sample only already cached elevation tiles. This method never creates
+        //! or loads terrain data; missing tiles write failValue.
+        //! @param begin Iterator pointing to beginning of point array
+        //! @param end Iterator pointing to end of point array
+        //! @param ws Optional working set (local layer selection, can be nullptr)
+        //! @param failValue Value to store in Z if the sampling fails
+        //! @return Number of valid elevations sampled, or -1 if there was an error
+        int sampleMapCoordsFromCache(
+            std::vector<osg::Vec3d>::iterator begin,
+            std::vector<osg::Vec3d>::iterator end,
+            WorkingSet* ws = nullptr,
+            float failValue = NO_DATA_VALUE);
+
+        //! Publish already visible terrain samples for cache-only consumers.
+        //! Input points must be in the map's SRS and Z is elevation in meters.
+        void setExternalTerrainSamples(
+            std::vector<ExternalTerrainSample>&& samples,
+            unsigned generation);
+
         //! Creates an envelope for sampling lots of points in a localized region
         //! @param out Created envelope (output)
         //! @param refPoint Reference point near which you intend to sample points
@@ -236,6 +260,20 @@ namespace osgEarth
         MapData _mapData;
         Threading::ReadWriteMutex _mapDataMutex;
         std::atomic<unsigned> _revision{0};
+
+        struct ExternalTerrainCache
+        {
+            std::vector<ExternalTerrainSample> samples;
+            std::unordered_map<long long, std::vector<unsigned>> grid;
+            double cellSize = 0.0001;
+            double maxSearchDistance2 = 0.0001 * 0.0001 * 4.0;
+            unsigned generation = 0;
+        };
+
+        ExternalTerrainCache _externalTerrain;
+        Threading::ReadWriteMutex _externalTerrainMutex;
+
+        bool sampleExternalTerrain(double x, double y, double& z);
 
         // internal - get a sample at a point
         ElevationSample getSample(
