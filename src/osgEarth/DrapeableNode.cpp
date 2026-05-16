@@ -16,7 +16,8 @@ using namespace osgEarth;
 
 
 DrapeableNode::DrapeableNode() :
-_drapingEnabled( true )
+_drapingEnabled( true ),
+_intersectionTraversalEnabled( true )
 {
     // Unfortunetly, there's no way to return a correct bounding sphere for
     // the node since the draping will move it to the ground. The bounds
@@ -28,7 +29,8 @@ _drapingEnabled( true )
 
 DrapeableNode::DrapeableNode(const DrapeableNode& rhs, const osg::CopyOp& copy) :
 osg::Group(rhs, copy),
-_drapingEnabled(rhs._drapingEnabled)
+_drapingEnabled(rhs._drapingEnabled),
+_intersectionTraversalEnabled(rhs._intersectionTraversalEnabled)
 {
     //nop
 }
@@ -41,6 +43,12 @@ DrapeableNode::setDrapingEnabled(bool value)
         _drapingEnabled = value;
         setCullingActive( !_drapingEnabled );
     }
+}
+
+void
+DrapeableNode::setIntersectionTraversalEnabled(bool value)
+{
+    _intersectionTraversalEnabled = value;
 }
 
 void
@@ -58,6 +66,10 @@ DrapeableNode::traverse(osg::NodeVisitor& nv)
                 cullSet.push(this, cv->getNodePath(), nv.getFrameStamp());
             }
         }
+    }
+    else if (_drapingEnabled && !_intersectionTraversalEnabled && nv.getVisitorType() == nv.INTERSECTION_VISITOR)
+    {
+        return;
     }
     else
     {

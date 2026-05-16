@@ -858,10 +858,11 @@ OverlayDecorator::traverse( osg::NodeVisitor& nv )
         }
     }
 
-    else
+    else if (nv.getVisitorType() != nv.INTERSECTION_VISITOR)
     {
-        // Some other type of visitor (like update or intersection). Skip the technique
-        // and traverse the geometry directly.
+        // Some other type of visitor, like update. Skip the technique and traverse the
+        // geometry directly. Intersection visitors must not see overlay source geometry;
+        // terrain mouse queries should hit the terrain surface, not the projected source.
         for(unsigned i=0; i<_overlayGroups.size(); ++i)
         {
             _overlayGroups[i]->accept( nv );

@@ -53,7 +53,10 @@ namespace
         {
             setCullingActive( false );
             osg::StateSet* ss = getOrCreateStateSet();
-            ss->setMode(GL_DEPTH_TEST, 0);
+            // INHERIT(0) would let GL_DEPTH_TEST follow whatever the previous pass left
+            // bound; force OFF so drape RTT is isolated from main-view depth state.
+            ss->setMode(GL_DEPTH_TEST,
+                osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE);
             ss->setRenderBinDetails(dm->getRenderBinNumber(), "TraversalOrderBin", osg::StateSet::OVERRIDE_PROTECTED_RENDERBIN_DETAILS);
         }
 
@@ -105,14 +108,20 @@ namespace
         META_Object(osgEarth, LocalPerViewData);
 
         osg::ref_ptr<osg::Uniform> _texGenUniform;
+        osg::ref_ptr<osg::Uniform> _readyUniform;
+        int _lastOverlayFrame = -1;
 
         void resizeGLObjectBuffers(unsigned maxSize) {
             if (_texGenUniform.valid())
                 _texGenUniform->resizeGLObjectBuffers(maxSize);
+            if (_readyUniform.valid())
+                _readyUniform->resizeGLObjectBuffers(maxSize);
         }
         void releaseGLObjects(osg::State* state) const {
             if (_texGenUniform.valid())
                 _texGenUniform->releaseGLObjects(state);
+            if (_readyUniform.valid())
+                _readyUniform->releaseGLObjects(state);
         }
 
         LocalPerViewData() { }
@@ -356,7 +365,7 @@ namespace
 #define LC "[DrapingTechnique] "
 
 DrapingTechnique::DrapingTechnique() :
-_textureUnit     ( 1 ),
+_textureUnit     ( 4 ),
 _textureSize     ( 1024 ),
 _mipmapping      ( false ),
 _rttBlending     ( true ),
@@ -366,6 +375,10 @@ _maxFarNearRatio ( 5.0 )
     _supported = Registry::capabilities().supportsGLSL();
 
     _drapingManager = std::make_shared<DrapingManager>();
+
+    // HyperTerrain binds raster overlays to units 0..3 in its fixed shader.
+    // Keep the projected drape texture outside that range.
+    setTextureUnit(4);
 
     // try newer version
     const char* nfr2 = ::getenv("OSGEARTH_OVERLAY_RESOLUTION_RATIO");
@@ -549,6 +562,10 @@ DrapingTechnique::setUpCamera(OverlayDecorator::TechRTTParams& params)
     local->_texGenUniform = params._terrainStateSet->getOrCreateUniform(
         "oe_overlay_texmatrix", osg::Uniform::FLOAT_MAT4 );
 
+    local->_readyUniform = params._terrainStateSet->getOrCreateUniform(
+        "oe_overlay_ready", osg::Uniform::FLOAT );
+    local->_readyUniform->set(0.0f);
+
     // shaders
     Shaders pkg;
     pkg.load( terrain_vp, pkg.Draping );
@@ -600,6 +617,16 @@ DrapingTechnique::preCullTerrain(OverlayDecorator::TechRTTParams& params,
         // We do this so we can detect the RTT's camera's parent for 
         // things like auto-scaling, picking, and so on.
         params._rttCamera->setView(cv->getCurrentCamera()->getView());
+    }
+
+    if (params._techniqueData.valid())
+    {
+        LocalPerViewData& local = *static_cast<LocalPerViewData*>(params._techniqueData.get());
+        const osg::FrameStamp* frameStamp = cv ? cv->getFrameStamp() : nullptr;
+        const int frameNumber = frameStamp ? static_cast<int>(frameStamp->getFrameNumber()) : 0;
+        const bool hasPreviousOverlay = local._lastOverlayFrame >= 0 && local._lastOverlayFrame < frameNumber;
+        if (local._readyUniform.valid())
+            local._readyUniform->set(hasPreviousOverlay ? 1.0f : 0.0f);
     }
 }
        
@@ -654,6 +681,9 @@ DrapingTechnique::cullOverlayGroup(OverlayDecorator::TechRTTParams& params,
 
         // traverse the overlay group (via the RTT camera).
         static_cast<DrapingCamera*>(params._rttCamera.get())->accept( *cv, cv->getCurrentCamera() );
+
+        const osg::FrameStamp* frameStamp = cv ? cv->getFrameStamp() : nullptr;
+        local._lastOverlayFrame = frameStamp ? static_cast<int>(frameStamp->getFrameNumber()) : 0;
     }
 }
 

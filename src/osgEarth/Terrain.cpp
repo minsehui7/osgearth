@@ -319,9 +319,6 @@ Terrain::fireTileUpdate( const TileKey& key, osg::Node* node )
 void
 Terrain::notifyMapElevationChanged()
 {
-    bumpElevationRevision();
-    _consumerVisibilitySalt.fetch_add(1u, std::memory_order_release);
-
     if (_callbacksSize > 0)
     {
         onTileUpdateOperation* op = new onTileUpdateOperation(TileKey::INVALID, 0L, this);

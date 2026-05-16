@@ -3,6 +3,7 @@
 * MIT License
 */
 #include "PrepareRenderResources"
+#include <CesiumGltf/Model.h>
 #include <CesiumGltfContent/GltfUtilities.h>
 #include <CesiumGltf/AccessorView.h>
 
@@ -863,11 +864,6 @@ namespace {
             return container;
         }
 
-        std::vector<ClampGeometrySource> takeClampGeometries()
-        {
-            return std::move(_clampGeometries);
-        }
-
         osg::Node* createNode(const CesiumGltf::Node& node, const osg::Matrixd& parentToEcef)
         {
             osg::MatrixTransform* root = new osg::MatrixTransform;
@@ -980,24 +976,6 @@ namespace {
 
                 _textures.push_back(osgTexture);
             }
-        }
-
-        void recordClampGeometry(osg::Geometry* geom, const osg::Matrixd& localToEcef)
-        {
-            if (!_renderStyle || !_renderStyle->clampToGround || !geom)
-                return;
-
-            const osg::Vec3Array* verts = dynamic_cast<const osg::Vec3Array*>(geom->getVertexArray());
-            if (!verts || verts->empty())
-                return;
-
-            ClampGeometrySource source;
-            source.geom = geom;
-            source.sourceVerts.assign(verts->begin(), verts->end());
-            source.binding = verts->getBinding();
-            source.normalize = verts->getNormalize();
-            source.localToEcef = localToEcef;
-            _clampGeometries.push_back(std::move(source));
         }
 
         osg::Node* createMesh(const CesiumGltf::Mesh& mesh, const osg::Matrixd& localToEcef)
@@ -1147,14 +1125,11 @@ namespace {
                 }
 
                 applyRenderStyle(geom.get(), primitive);
-                recordClampGeometry(geom.get(), localToEcef);
-
                 geode->addChild(geom);
 
                 osg::ref_ptr<osg::Drawable> edgeDrawable = createStyledEdgeDrawable(geom.get(), primitive);
                 if (edgeDrawable.valid())
                 {
-                    recordClampGeometry(edgeDrawable->asGeometry(), localToEcef);
                     geode->addChild(edgeDrawable.get());
                 }
 
@@ -1385,7 +1360,6 @@ namespace {
 
         std::vector< osg::ref_ptr< osg::Array> > _arrays;
         std::vector< osg::ref_ptr< osg::Texture2D > > _textures;
-        std::vector<ClampGeometrySource> _clampGeometries;
     };
 }
 /********/
@@ -1426,7 +1400,6 @@ PrepareRendererResources::prepareInLoadThread(
         result->hasRenderStyle = true;
     }
     result->node = builder.build();
-    result->clampGeometries = builder.takeClampGeometries();
     return asyncSystem.createResolvedFuture(
         Cesium3DTilesSelection::TileLoadResultAndRenderResources{
             std::move(tileLoadResult),
@@ -1438,7 +1411,6 @@ void* PrepareRendererResources::prepareInMainThread(Cesium3DTilesSelection::Tile
     LoadThreadResult* loadThreadResult = reinterpret_cast<LoadThreadResult*>(pLoadThreadResult);
     MainThreadResult* mainThreadResult = new MainThreadResult();
     mainThreadResult->node = loadThreadResult->node;
-    mainThreadResult->clampGeometries = std::move(loadThreadResult->clampGeometries);
 
     loadThreadResult->node = nullptr;
     delete loadThreadResult;

@@ -32,6 +32,10 @@ namespace osgEarth
         void setDrapingEnabled(bool value);
         bool getDrapingEnabled() const { return _drapingEnabled; }
 
+        //! Whether intersection visitors should traverse draped children. Defaults to true.
+        void setIntersectionTraversalEnabled(bool value);
+        bool getIntersectionTraversalEnabled() const { return _intersectionTraversalEnabled; }
+
     public: // osg::Group/Node
 
         virtual void traverse(osg::NodeVisitor& nv) override;
@@ -41,6 +45,7 @@ namespace osgEarth
         virtual ~DrapeableNode() { }
 
         bool _drapingEnabled;
+        bool _intersectionTraversalEnabled;
     };
 
 } // namespace osgEarth

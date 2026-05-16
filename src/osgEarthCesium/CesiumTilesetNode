@@ -8,15 +8,7 @@
 #include "Export"
 #include "PrepareRenderResources"
 #include <osg/Group>
-#include <osgEarth/Terrain>
-
-#include <atomic>
-#include <condition_variable>
-#include <deque>
-#include <memory>
-#include <mutex>
-#include <thread>
-#include <unordered_set>
+#include <osgEarth/DrapeableNode>
 #include <vector>
 
 namespace osgEarth { class Map; }
@@ -24,9 +16,6 @@ namespace osgEarth { class Map; }
 namespace osgEarth { namespace Cesium
 {
     using namespace osgEarth;
-
-    struct ClampWorkResult;
-    struct ClampWorkItem;
 
     class OSGEARTHCESIUM_EXPORT CesiumTilesetNode : public osg::Group
     {
@@ -49,44 +38,14 @@ namespace osgEarth { namespace Cesium
         int getMinimumRenderableLevel() const;
         void setMinimumRenderableLevel(int level);
 
-        void invalidateClampedTiles();
-
-        // Called by TerrainCallbackAdapter when terrain tiles load/change.
-        void onTileUpdate(const TileKey& key, osg::Node* tile, TerrainCallbackContext& context);
-
     private:
         osg::Group* tileParent();
-        void ensureClampThread();
-        void clampWorkerLoop();
-        void applyClampResults();
-        void installTerrainCallback();
+        osg::Group* ensureDrapeRoot();
 
         void* _tileset = nullptr;
         int _minimumRenderableLevel = -1;
         bool _clampToGround = false;
-
-        // Async CPU clamping. Terrain sampling only reads already cached elevation data.
-        std::mutex _clampMutex;
-        std::condition_variable _clampCV;
-        std::deque<std::shared_ptr<ClampWorkItem>> _clampPending;
-        std::unordered_set<osg::Node*> _clampInFlight;
-        const osgEarth::Map* _workerMap = nullptr;
-
-        std::mutex _resultMutex;
-        std::deque<std::shared_ptr<ClampWorkResult>> _clampResults;
-
-        std::thread _clampThread;
-        std::atomic<bool> _clampRunning{false};
-
-        /// Bumped when terrain tile data changes so in-flight clamp jobs can be discarded safely.
-        std::atomic<unsigned> _clampGeneration{0};
-        /// Bumped from TerrainCallback; drained on traversal so terrain updates are never collapsed into a bool.
-        std::atomic<unsigned> _terrainClampGeneration{0};
-        unsigned _processedTerrainClampGeneration = 0u;
-
-        osg::ref_ptr<TerrainCallback> _terrainCallback;
-        bool _terrainCallbackInstalled = false;
-        osg::ref_ptr<Terrain> _cachedTerrain;
+        osg::ref_ptr<osgEarth::DrapeableNode> _drapeRoot;
     };
 } }
 
