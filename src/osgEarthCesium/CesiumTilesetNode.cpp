@@ -15,6 +15,7 @@
 #include <Cesium3DTilesSelection/BoundingVolume.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -220,6 +221,15 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
             const double viewZoom = estimateViewZoomLevel(osgEye, vfov, cv->getViewport()->height());
             if (viewZoom < static_cast<double>(_minimumRenderableLevel))
             {
+                static std::chrono::steady_clock::time_point s_lastZoomGateLog{};
+                const auto now = std::chrono::steady_clock::now();
+                if (s_lastZoomGateLog == std::chrono::steady_clock::time_point{} ||
+                    now - s_lastZoomGateLog >= std::chrono::seconds(2))
+                {
+                    s_lastZoomGateLog = now;
+                    OE_INFO << LC << "view zoom gate: viewZoom=" << viewZoom << " minRenderLevel="
+                            << _minimumRenderableLevel << " (skipping updateView / tile requests)" << std::endl;
+                }
                 osg::Group* parent = tileParent();
                 parent->removeChildren(0, parent->getNumChildren());
                 osg::Group::traverse(nv);
