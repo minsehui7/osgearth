@@ -6,16 +6,34 @@
 #include "Settings"
 
 #include <CesiumAsync/AsyncSystem.h>
+#include <CesiumUtility/Uri.h>
 #include <osgEarth/URI>
 #include <osgEarth/Registry>
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 
 using namespace osgEarth;
 using namespace osgEarth::Cesium;
 
 namespace {
+
+/// file:/// URLs must be converted before osgEarth local read (ifstream cannot open the URI string).
+std::string localPathForFileUrl(const std::string& url) {
+    const std::size_t schemeEnd = url.find("://");
+    if (schemeEnd == std::string::npos) {
+        return url;
+    }
+    if (url.compare(0, schemeEnd, "file") != 0) {
+        return url;
+    }
+    const CesiumUtility::Uri parsed(url);
+    if (!parsed.isValid()) {
+        return url;
+    }
+    return CesiumUtility::Uri::uriPathToNativePath(std::string(parsed.getPath()));
+}
 
 // Elapsed since first 3D Tiles HTTP log (same "[+h:mm:ss]" as HyperIndexer / h3dt-build).
 std::chrono::steady_clock::time_point logSessionOrigin() {
@@ -33,6 +51,40 @@ void writeElapsedStamp(char *buf, std::size_t bufSize) {
     const unsigned ss = static_cast<unsigned>(t % 60ULL);
     std::snprintf(buf, bufSize, "[+%llu:%02u:%02u]", hh, mm, ss);
 }
+
+// #region agent log
+void agentLogAssetRead(
+    const char *hypothesisId,
+    const char *message,
+    const std::string &url,
+    const std::string &readPath,
+    bool isRemote,
+    int readCode,
+    std::size_t contentBytes,
+    bool blacklisted) {
+    FILE *f = std::fopen("G:/dev/HyperLiDAR/debug-d0b09c.log", "ab");
+    if (!f) {
+        return;
+    }
+    const auto ts = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch());
+    std::fprintf(
+        f,
+        "{\"sessionId\":\"d0b09c\",\"hypothesisId\":\"%s\",\"location\":\"AssetAccessor.cpp:get\","
+        "\"message\":\"%s\",\"data\":{\"url\":\"%s\",\"readPath\":\"%s\",\"isRemote\":%s,"
+        "\"readCode\":%d,\"contentBytes\":%zu,\"blacklisted\":%s},\"timestamp\":%lld}\n",
+        hypothesisId,
+        message,
+        url.c_str(),
+        readPath.c_str(),
+        isRemote ? "true" : "false",
+        readCode,
+        contentBytes,
+        blacklisted ? "true" : "false",
+        static_cast<long long>(ts.count()));
+    std::fclose(f);
+}
+// #endregion
 
 void log3DTilesHttpLine(const char *verb, int statusCode, const std::string &url) {
     char stamp[48];
@@ -134,8 +186,11 @@ AssetAccessor::get(const CesiumAsync::AsyncSystem& asyncSystem,
                     uriContext.addHeader(header.first, header.second);
                 }
                 
-                URI uri(url, uriContext);
+                const std::string readPath = localPathForFileUrl(url);
+                URI uri(readPath, uriContext);
 
+                const bool blacklisted =
+                    osgEarth::Registry::instance()->isBlacklisted(uri.full());
                 auto httpResponse = uri.readString(options.get());
                 std::unique_ptr< AssetResponse > response = std::make_unique< AssetResponse >();
 
@@ -149,6 +204,18 @@ AssetAccessor::get(const CesiumAsync::AsyncSystem& asyncSystem,
                     response->_headers[i.key()] = i.value();
                 }
                 std::string content = httpResponse.getString();
+
+                // #region agent log
+                agentLogAssetRead(
+                    "H1",
+                    "asset_get_after_readString",
+                    url,
+                    readPath,
+                    uri.isRemote(),
+                    static_cast<int>(httpResponse.code()),
+                    content.size(),
+                    blacklisted);
+                // #endregion
 
                 std::vector<std::byte> result(content.size());
                 for (unsigned int i = 0; i < content.size(); ++i)

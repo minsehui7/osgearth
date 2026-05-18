@@ -63,6 +63,8 @@ namespace
     struct TileLocalFrame
     {
         bool valid = false;
+        /// When true, glTF POSITION is ECEF offset (CESIUM_RTC), not Y-up ENU.
+        bool ecefRtcVertices = false;
         TileBoundsRad bounds;
         double origin[3]{};
         double east[3]{};
@@ -353,21 +355,34 @@ namespace
         return true;
     }
 
+    /// Same geodetic quadtree indexing as Hyper3DTiles \c GeodeticTileScheme (y=0 at south pole).
     TileBoundsRad geodeticTileBounds(const TileId& id)
     {
         constexpr double kPi = 3.14159265358979323846;
+        constexpr double kDegToRad = kPi / 180.0;
         const unsigned tiles = 1u << static_cast<unsigned>(id.z);
         const double lonExtent = 360.0 / static_cast<double>(tiles);
         const double latExtent = 180.0 / static_cast<double>(tiles);
         const double westDeg = -180.0 + static_cast<double>(id.x) * lonExtent;
         const double eastDeg = -180.0 + static_cast<double>(id.x + 1) * lonExtent;
-        const double northDeg = 90.0 - static_cast<double>(id.y) * latExtent;
-        const double southDeg = 90.0 - static_cast<double>(id.y + 1) * latExtent;
+        const double southDeg = -90.0 + static_cast<double>(id.y) * latExtent;
+        const double northDeg = -90.0 + static_cast<double>(id.y + 1) * latExtent;
         return TileBoundsRad{
-            westDeg * (kPi / 180.0),
-            southDeg * (kPi / 180.0),
-            eastDeg * (kPi / 180.0),
-            northDeg * (kPi / 180.0)};
+            westDeg * kDegToRad,
+            southDeg * kDegToRad,
+            eastDeg * kDegToRad,
+            northDeg * kDegToRad};
+    }
+
+    /// glm column-major M*v and OSG row-major v*M: same 16 doubles, different layout (see HyperTerrain).
+    osg::Matrixd glmMat4ToOsgMatrixd(const glm::dmat4x4& m)
+    {
+        const double* p = glm::value_ptr(m);
+        return osg::Matrixd(
+            p[0], p[1], p[2], p[3],
+            p[4], p[5], p[6], p[7],
+            p[8], p[9], p[10], p[11],
+            p[12], p[13], p[14], p[15]);
     }
 
     void geodeticRadHeightToEcef(
@@ -459,8 +474,9 @@ namespace
         const double sinLat = std::sin(latC);
         const double cosLat = std::cos(latC);
 
+        // Match Hyper3DTiles CESIUM_RTC center (tile center at ellipsoid height 0).
         geodeticRadHeightToEcef(
-            out.bounds.west, out.bounds.south, 0.0,
+            lonC, latC, 0.0,
             &out.origin[0], &out.origin[1], &out.origin[2]);
 
         out.east[0] = -sinLon;
@@ -485,15 +501,27 @@ namespace
         {
             return false;
         }
-        const double eastM = static_cast<double>(p.x());
-        const double upM = static_cast<double>(p.y());
-        const double northM = -static_cast<double>(p.z());
-        const double ecefX = frame.origin[0] + eastM * frame.east[0] +
-            northM * frame.north[0] + upM * frame.up[0];
-        const double ecefY = frame.origin[1] + eastM * frame.east[1] +
-            northM * frame.north[1] + upM * frame.up[1];
-        const double ecefZ = frame.origin[2] + eastM * frame.east[2] +
-            northM * frame.north[2] + upM * frame.up[2];
+        double ecefX = 0.0;
+        double ecefY = 0.0;
+        double ecefZ = 0.0;
+        if (frame.ecefRtcVertices)
+        {
+            ecefX = frame.origin[0] + static_cast<double>(p.x());
+            ecefY = frame.origin[1] + static_cast<double>(p.y());
+            ecefZ = frame.origin[2] + static_cast<double>(p.z());
+        }
+        else
+        {
+            const double eastM = static_cast<double>(p.x());
+            const double upM = static_cast<double>(p.y());
+            const double northM = -static_cast<double>(p.z());
+            ecefX = frame.origin[0] + eastM * frame.east[0] +
+                northM * frame.north[0] + upM * frame.up[0];
+            ecefY = frame.origin[1] + eastM * frame.east[1] +
+                northM * frame.north[1] + upM * frame.up[1];
+            ecefZ = frame.origin[2] + eastM * frame.east[2] +
+                northM * frame.north[2] + upM * frame.up[2];
+        }
         double heightM = 0.0;
         ecefToGeodeticRadHeight(ecefX, ecefY, ecefZ, lonRad, latRad, &heightM);
         *lonRad = unwrapLonNear(*lonRad, (frame.bounds.west + frame.bounds.east) * 0.5);
@@ -511,15 +539,27 @@ namespace
         {
             return false;
         }
-        const double eastM = static_cast<double>(p.x());
-        const double upM = static_cast<double>(p.y());
-        const double northM = -static_cast<double>(p.z());
-        const double ecefX = frame.origin[0] + eastM * frame.east[0] +
-            northM * frame.north[0] + upM * frame.up[0];
-        const double ecefY = frame.origin[1] + eastM * frame.east[1] +
-            northM * frame.north[1] + upM * frame.up[1];
-        const double ecefZ = frame.origin[2] + eastM * frame.east[2] +
-            northM * frame.north[2] + upM * frame.up[2];
+        double ecefX = 0.0;
+        double ecefY = 0.0;
+        double ecefZ = 0.0;
+        if (frame.ecefRtcVertices)
+        {
+            ecefX = frame.origin[0] + static_cast<double>(p.x());
+            ecefY = frame.origin[1] + static_cast<double>(p.y());
+            ecefZ = frame.origin[2] + static_cast<double>(p.z());
+        }
+        else
+        {
+            const double eastM = static_cast<double>(p.x());
+            const double upM = static_cast<double>(p.y());
+            const double northM = -static_cast<double>(p.z());
+            ecefX = frame.origin[0] + eastM * frame.east[0] +
+                northM * frame.north[0] + upM * frame.up[0];
+            ecefY = frame.origin[1] + eastM * frame.east[1] +
+                northM * frame.north[1] + upM * frame.up[1];
+            ecefZ = frame.origin[2] + eastM * frame.east[2] +
+                northM * frame.north[2] + upM * frame.up[2];
+        }
         ecefToGeodeticRadHeight(ecefX, ecefY, ecefZ, lonRad, latRad, heightM);
         *lonRad = unwrapLonNear(*lonRad, (frame.bounds.west + frame.bounds.east) * 0.5);
         return std::isfinite(*lonRad) && std::isfinite(*latRad) && std::isfinite(*heightM);
@@ -543,6 +583,18 @@ namespace
         const double dx = ecef[0] - frame.origin[0];
         const double dy = ecef[1] - frame.origin[1];
         const double dz = ecef[2] - frame.origin[2];
+        if (frame.ecefRtcVertices)
+        {
+            if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(dz))
+            {
+                return false;
+            }
+            out->set(
+                static_cast<float>(dx),
+                static_cast<float>(dy),
+                static_cast<float>(dz));
+            return true;
+        }
         const double eastM = dx * frame.east[0] + dy * frame.east[1] + dz * frame.east[2];
         const double northM = dx * frame.north[0] + dy * frame.north[1] + dz * frame.north[2];
         const double upM = dx * frame.up[0] + dy * frame.up[1] + dz * frame.up[2];
@@ -830,9 +882,7 @@ namespace {
             glm::dmat4x4 rootTransform = _transform;
             rootTransform = CesiumGltfContent::GltfUtilities::applyRtcCenter(*_model, rootTransform);
             rootTransform = CesiumGltfContent::GltfUtilities::applyGltfUpAxisTransform(*_model, rootTransform);
-            matrix.set(glm::value_ptr(rootTransform));
-
-            //matrix.set(glm::value_ptr(_transform));
+            matrix = glmMat4ToOsgMatrixd(rootTransform);
             root->setMatrix(matrix);
         
             if (!_model->scenes.empty())
@@ -1390,6 +1440,10 @@ PrepareRendererResources::prepareInLoadThread(
         parseTileIdFromUrl(tileLoadResult.pCompletedRequest->url(), &tileId))
     {
         tileFrame = makeTileLocalFrame(tileId);
+    }
+    if (model->extensions.find("CESIUM_RTC") != model->extensions.end())
+    {
+        tileFrame.ecefRtcVertices = true;
     }
 
     NodeBuilder builder(model, transform, renderStyle, tileFrame);

@@ -69,8 +69,18 @@ namespace
         const char *message,
         double viewZoom,
         int minRenderLevel,
-        std::size_t tilesToRender) {
-        FILE *f = std::fopen("d:/dev/HyperLiDAR/debug-9cefe4.log", "ab");
+        std::size_t tilesToRender,
+        uint32_t tilesVisited,
+        uint32_t maxDepthVisited,
+        int32_t workerLoadQueueLength) {
+        try
+        {
+            std::filesystem::create_directories("logs");
+        }
+        catch (...)
+        {
+        }
+        FILE *f = std::fopen("logs/cesium-selection-diagnostics.log", "ab");
         if (!f) {
             return;
         }
@@ -79,13 +89,16 @@ namespace
         std::fprintf(
             f,
             "{\"sessionId\":\"9cefe4\",\"hypothesisId\":\"%s\",\"location\":\"%s\",\"message\":\"%s\","
-            "\"data\":{\"viewZoom\":%.4f,\"minRenderLevel\":%d,\"tilesToRender\":%zu},\"timestamp\":%lld}\n",
+            "\"data\":{\"viewZoom\":%.4f,\"minRenderLevel\":%d,\"tilesToRender\":%zu,\"tilesVisited\":%u,\"maxDepthVisited\":%u,\"workerLoadQueueLength\":%d},\"timestamp\":%lld}\n",
             hypothesisId,
             location,
             message,
             viewZoom,
             minRenderLevel,
             tilesToRender,
+            tilesVisited,
+            maxDepthVisited,
+            workerLoadQueueLength,
             static_cast<long long>(ms.count()));
         std::fclose(f);
     }
@@ -107,6 +120,7 @@ CesiumTilesetNode::CesiumTilesetNode(unsigned int assetID, const std::string& se
 
     Cesium3DTilesSelection::TilesetOptions options;    
     options.maximumScreenSpaceError = maximumScreenSpaceError;
+    options.minimumRenderableLevel = minimumRenderableLevel;
     options.contentOptions.generateMissingNormalsSmooth = true;
     options.rendererOptions = renderStyle;
     Cesium3DTilesSelection::Tileset* tileset = new Cesium3DTilesSelection::Tileset(externals, assetID, token, options, server);
@@ -134,6 +148,7 @@ CesiumTilesetNode::CesiumTilesetNode(const std::string& url, const std::string& 
 
     Cesium3DTilesSelection::TilesetOptions options;
     options.maximumScreenSpaceError = maximumScreenSpaceError;
+    options.minimumRenderableLevel = minimumRenderableLevel;
     options.contentOptions.generateMissingNormalsSmooth = true;
     options.rendererOptions = renderStyle;
     Cesium3DTilesSelection::Tileset* tileset = new Cesium3DTilesSelection::Tileset(externals, url, options);
@@ -189,6 +204,9 @@ int CesiumTilesetNode::getMinimumRenderableLevel() const
 void CesiumTilesetNode::setMinimumRenderableLevel(int level)
 {
     _minimumRenderableLevel = level;
+    Cesium3DTilesSelection::Tileset* tileset = (Cesium3DTilesSelection::Tileset*)_tileset;
+    if (tileset)
+        tileset->getOptions().minimumRenderableLevel = level;
 }
 
 osg::Group*
@@ -273,7 +291,10 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
                     first ? "first_update_view" : "update_view",
                     viewZoom,
                     _minimumRenderableLevel,
-                    nTiles);
+                    nTiles,
+                    updates.tilesVisited,
+                    updates.maxDepthVisited,
+                    updates.workerThreadTileLoadQueueLength);
             }
         }
         // #endregion
