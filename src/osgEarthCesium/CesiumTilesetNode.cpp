@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -58,6 +59,35 @@ namespace
         const double mpp = viewHeightMeters / std::max(viewportHeightPx, 1.0);
         return std::log2(kEarthCircumferenceM / (mpp * kTilePixels));
     }
+
+    // #region agent log
+    void agentSessionLog(
+        const char *hypothesisId,
+        const char *location,
+        const char *message,
+        double viewZoom,
+        int minRenderLevel,
+        std::size_t tilesToRender) {
+        FILE *f = std::fopen("d:/dev/HyperLiDAR/debug-9cefe4.log", "ab");
+        if (!f) {
+            return;
+        }
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch());
+        std::fprintf(
+            f,
+            "{\"sessionId\":\"9cefe4\",\"hypothesisId\":\"%s\",\"location\":\"%s\",\"message\":\"%s\","
+            "\"data\":{\"viewZoom\":%.4f,\"minRenderLevel\":%d,\"tilesToRender\":%zu},\"timestamp\":%lld}\n",
+            hypothesisId,
+            location,
+            message,
+            viewZoom,
+            minRenderLevel,
+            tilesToRender,
+            static_cast<long long>(ms.count()));
+        std::fclose(f);
+    }
+    // #endregion
 
 }
 
@@ -216,9 +246,10 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         vfov = osg::DegreesToRadians(vfov);
         double hfov = 2 * atan(tan(vfov / 2) * (ar));
 
+        const double viewZoom = estimateViewZoomLevel(osgEye, vfov, cv->getViewport()->height());
+
         if (_minimumRenderableLevel >= 0)
         {
-            const double viewZoom = estimateViewZoomLevel(osgEye, vfov, cv->getViewport()->height());
             if (viewZoom < static_cast<double>(_minimumRenderableLevel))
             {
                 static std::chrono::steady_clock::time_point s_lastZoomGateLog{};
@@ -229,6 +260,15 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
                     s_lastZoomGateLog = now;
                     OE_INFO << LC << "view zoom gate: viewZoom=" << viewZoom << " minRenderLevel="
                             << _minimumRenderableLevel << " (skipping updateView / tile requests)" << std::endl;
+                    // #region agent log
+                    agentSessionLog(
+                        "H3",
+                        "CesiumTilesetNode.cpp:traverse",
+                        "zoom_gate_skip",
+                        viewZoom,
+                        _minimumRenderableLevel,
+                        0);
+                    // #endregion
                 }
                 osg::Group* parent = tileParent();
                 parent->removeChildren(0, parent->getNumChildren());
@@ -243,6 +283,26 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         viewStates.push_back(viewState);
         Cesium3DTilesSelection::Tileset* tileset = (Cesium3DTilesSelection::Tileset*)_tileset;
         auto updates = tileset->updateView(viewStates);
+
+        // #region agent log
+        {
+            static std::chrono::steady_clock::time_point s_lastUpdateLog{};
+            const auto now = std::chrono::steady_clock::now();
+            const std::size_t nTiles = updates.tilesToRenderThisFrame.size();
+            const bool first = (s_lastUpdateLog == std::chrono::steady_clock::time_point{});
+            if (first || nTiles > 0 ||
+                now - s_lastUpdateLog >= std::chrono::seconds(3)) {
+                s_lastUpdateLog = now;
+                agentSessionLog(
+                    first ? "H4" : "H6",
+                    "CesiumTilesetNode.cpp:traverse",
+                    first ? "first_update_view" : "update_view",
+                    viewZoom,
+                    _minimumRenderableLevel,
+                    nTiles);
+            }
+        }
+        // #endregion
 
         osg::Group* parent = tileParent();
         std::vector<osg::ref_ptr<osg::Node>> displayNodes;

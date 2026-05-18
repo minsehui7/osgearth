@@ -8,6 +8,8 @@
 #include <osg/ref_ptr>
 #include <sstream>
 #include <iostream>
+#include <chrono>
+#include <cstdio>
 
 #ifdef OSGEARTH_HAVE_SPDLOG
 #include <spdlog/spdlog.h>
@@ -126,18 +128,52 @@ namespace
 {
     static osg::ApplicationUsageProxy Notify_e0(osg::ApplicationUsage::ENVIRONMENTAL_VARIABLE, "OSGEARTH_NOTIFY_LEVEL <mode>", "FATAL | WARN | NOTICE | DEBUG_INFO | DEBUG_FP | DEBUG | INFO | ALWAYS");
 
+    // Same "[+h:mm:ss]" elapsed stamp as HyperIndexer / h3dt-build / 3D Tiles HTTP logs.
+    std::chrono::steady_clock::time_point notifySessionOrigin()
+    {
+        static const std::chrono::steady_clock::time_point origin = std::chrono::steady_clock::now();
+        return origin;
+    }
+
+    std::string formatNotifyElapsedStamp()
+    {
+        using namespace std::chrono;
+        const auto secCount = duration_cast<seconds>(steady_clock::now() - notifySessionOrigin()).count();
+        const unsigned long long t =
+            secCount >= 0 ? static_cast<unsigned long long>(secCount) : 0ULL;
+        const unsigned long long hh = t / 3600ULL;
+        const unsigned mm = static_cast<unsigned>((t % 3600ULL) / 60ULL);
+        const unsigned ss = static_cast<unsigned>(t % 60ULL);
+        char buf[48];
+        std::snprintf(buf, sizeof(buf), "[+%llu:%02u:%02u]", hh, mm, ss);
+        return buf;
+    }
+
 #ifdef OSGEARTH_HAVE_SPDLOG
     struct SpdLogNotifyHandler : public osg::NotifyHandler
     {
         SpdLogNotifyHandler()
         {
             _logger = spdlog::stdout_color_mt("osgearth");
-            _logger->set_pattern("%^[%n %l]%$ %v");
+            // Elapsed stamp is prepended in notify(); avoid "[osgearth info]" wrapper.
+            _logger->set_pattern("%v");
             _logger->set_level(spdlog::level::debug);
+        }
+
+        void logLine(spdlog::level::level_enum level, const std::string& line)
+        {
+            switch (level)
+            {
+            case spdlog::level::critical: _logger->critical(line); break;
+            case spdlog::level::warn:     _logger->warn(line); break;
+            case spdlog::level::info:     _logger->info(line); break;
+            default:                      _logger->debug(line); break;
+            }
         }
 
         void notify(osg::NotifySeverity severity, const char *message)
         {
+            const std::string stamp = formatNotifyElapsedStamp();
             std::string buf(message);
 
             auto parts = Strings::StringTokenizer()
@@ -148,28 +184,26 @@ namespace
 
             for (auto& part : parts)
             {
+                if (part.empty())
+                    continue;
+
+                const std::string line = stamp + " " + part;
                 switch (severity)
                 {
                 case osg::ALWAYS:
-                    _logger->critical(part);
-                    break;
                 case osg::FATAL:
-                    _logger->critical(part);
+                    logLine(spdlog::level::critical, line);
                     break;
                 case osg::WARN:
-                    _logger->warn(part);
+                    logLine(spdlog::level::warn, line);
                     break;
                 case osg::NOTICE:
-                    _logger->info(part);
+                case osg::INFO:
+                    logLine(spdlog::level::info, line);
                     break;
                 case osg::DEBUG_INFO:
-                    _logger->debug(part);
-                    break;
                 case osg::DEBUG_FP:
-                    _logger->debug(part);
-                    break;
-                case osg::INFO:
-                    _logger->info(part);
+                    logLine(spdlog::level::debug, line);
                     break;
                 }
             }
@@ -234,21 +268,7 @@ namespace
 #ifndef OSGEARTH_HAVE_SPDLOG
             if (_buffer)
             {
-                _notifyStream << "[osgEarth]";
-
-                switch (_buffer->getCurrentSeverity())
-                {
-                case(osg::ALWAYS):
-                case(osg::FATAL):
-                    _notifyStream << "**";
-                    break;
-                case(osg::WARN):
-                    _notifyStream << "* ";
-                    break;
-                default:
-                    _notifyStream << "  ";
-                    break;
-                }
+                _notifyStream << formatNotifyElapsedStamp() << ' ';
             }
 #endif
             return _notifyStream;

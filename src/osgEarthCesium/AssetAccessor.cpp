@@ -6,12 +6,45 @@
 #include "Settings"
 
 #include <CesiumAsync/AsyncSystem.h>
-#include <osgEarth/Notify>
 #include <osgEarth/URI>
 #include <osgEarth/Registry>
 
+#include <chrono>
+#include <cstdio>
+
 using namespace osgEarth;
 using namespace osgEarth::Cesium;
+
+namespace {
+
+// Elapsed since first 3D Tiles HTTP log (same "[+h:mm:ss]" as HyperIndexer / h3dt-build).
+std::chrono::steady_clock::time_point logSessionOrigin() {
+    static const std::chrono::steady_clock::time_point origin = std::chrono::steady_clock::now();
+    return origin;
+}
+
+void writeElapsedStamp(char *buf, std::size_t bufSize) {
+    using namespace std::chrono;
+    const auto secCount = duration_cast<seconds>(steady_clock::now() - logSessionOrigin()).count();
+    const unsigned long long t =
+        secCount >= 0 ? static_cast<unsigned long long>(secCount) : 0ULL;
+    const unsigned long long hh = t / 3600ULL;
+    const unsigned mm = static_cast<unsigned>((t % 3600ULL) / 60ULL);
+    const unsigned ss = static_cast<unsigned>(t % 60ULL);
+    std::snprintf(buf, bufSize, "[+%llu:%02u:%02u]", hh, mm, ss);
+}
+
+void log3DTilesHttpLine(const char *verb, int statusCode, const std::string &url) {
+    char stamp[48];
+    writeElapsedStamp(stamp, sizeof(stamp));
+    if (verb) {
+        std::fprintf(stderr, "%s [3DTiles] %s: %s\n", stamp, verb, url.c_str());
+    } else {
+        std::fprintf(stderr, "%s [3DTiles] %d %s\n", stamp, statusCode, url.c_str());
+    }
+}
+
+} // namespace
 
 /**********************************************/
 AssetRequest::AssetRequest(const std::string& method, const std::string& url, const std::vector<CesiumAsync::IAssetAccessor::THeader>& headers) :
@@ -90,8 +123,10 @@ AssetAccessor::get(const CesiumAsync::AsyncSystem& asyncSystem,
         [&](const auto& promise)
         {
             asyncSystem.runInWorkerThread([promise, request, url, headers, options]() {
-                if (osgEarth::Cesium::getLog3DTilesHttpUrls())
-                    OE_NOTICE << "[3DTiles] GET: " << url << std::endl;
+                const bool logHttp = osgEarth::Cesium::getLog3DTilesHttpUrls();
+                if (logHttp) {
+                    log3DTilesHttpLine("GET", 0, url);
+                }
 
                 URIContext uriContext;
                 for (auto header : headers)
@@ -124,8 +159,12 @@ AssetAccessor::get(const CesiumAsync::AsyncSystem& asyncSystem,
                 response->_result = result;
                 request->setResponse(std::move(response));
 
-                if (osgEarth::Cesium::getLog3DTilesHttpUrls())
-                    OE_NOTICE << "[3DTiles] " << request->_response->_statusCode << " " << url << std::endl;
+                if (logHttp) {
+                    log3DTilesHttpLine(
+                        nullptr,
+                        static_cast<int>(request->_response->_statusCode),
+                        url);
+                }
 
                 promise.resolve(request);
                 });
