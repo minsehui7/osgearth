@@ -26,6 +26,8 @@
 
 using namespace osgEarth::Cesium;
 
+#define LC "[CesiumTilesetNode] "
+
 // ---- Anonymous helpers -------------------------------------------------------
 
 namespace
@@ -247,35 +249,7 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         double hfov = 2 * atan(tan(vfov / 2) * (ar));
 
         const double viewZoom = estimateViewZoomLevel(osgEye, vfov, cv->getViewport()->height());
-
-        if (_minimumRenderableLevel >= 0)
-        {
-            if (viewZoom < static_cast<double>(_minimumRenderableLevel))
-            {
-                static std::chrono::steady_clock::time_point s_lastZoomGateLog{};
-                const auto now = std::chrono::steady_clock::now();
-                if (s_lastZoomGateLog == std::chrono::steady_clock::time_point{} ||
-                    now - s_lastZoomGateLog >= std::chrono::seconds(2))
-                {
-                    s_lastZoomGateLog = now;
-                    OE_INFO << LC << "view zoom gate: viewZoom=" << viewZoom << " minRenderLevel="
-                            << _minimumRenderableLevel << " (skipping updateView / tile requests)" << std::endl;
-                    // #region agent log
-                    agentSessionLog(
-                        "H3",
-                        "CesiumTilesetNode.cpp:traverse",
-                        "zoom_gate_skip",
-                        viewZoom,
-                        _minimumRenderableLevel,
-                        0);
-                    // #endregion
-                }
-                osg::Group* parent = tileParent();
-                parent->removeChildren(0, parent->getNumChildren());
-                osg::Group::traverse(nv);
-                return;
-            }
-        }
+        (void)viewZoom;
 
         // TODO:  Multiple views
         std::vector<Cesium3DTilesSelection::ViewState> viewStates;
