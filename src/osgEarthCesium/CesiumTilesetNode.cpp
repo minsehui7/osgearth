@@ -47,6 +47,21 @@ namespace
         }
     }
 
+    bool isMapZoomInRange(double viewZoom, int minZoom, int maxZoom)
+    {
+        if (minZoom < 0 && maxZoom < 0) {
+            return true;
+        }
+        const int z = static_cast<int>(std::floor(viewZoom));
+        if (minZoom >= 0 && z < minZoom) {
+            return false;
+        }
+        if (maxZoom >= 0 && z > maxZoom) {
+            return false;
+        }
+        return true;
+    }
+
     double estimateViewZoomLevel(
         const osg::Vec3d& eye,
         double vfovRad,
@@ -214,6 +229,22 @@ void CesiumTilesetNode::setMinimumRenderableLevel(int level)
         tileset->getOptions().minimumRenderableLevel = level;
 }
 
+void CesiumTilesetNode::setMapZoomRange(int minZoom, int maxZoom)
+{
+    _mapZoomMin = minZoom;
+    _mapZoomMax = maxZoom;
+}
+
+int CesiumTilesetNode::getMapZoomMin() const
+{
+    return _mapZoomMin;
+}
+
+int CesiumTilesetNode::getMapZoomMax() const
+{
+    return _mapZoomMax;
+}
+
 osg::Group*
 CesiumTilesetNode::tileParent()
 {
@@ -278,7 +309,14 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         double hfov = 2 * atan(tan(vfov / 2) * (ar));
 
         const double viewZoom = estimateViewZoomLevel(osgEye, vfov, cv->getViewport()->height());
-        (void)viewZoom;
+
+        if (!isMapZoomInRange(viewZoom, _mapZoomMin, _mapZoomMax))
+        {
+            osg::Group* parent = tileParent();
+            parent->removeChildren(0, parent->getNumChildren());
+            osg::Group::traverse(nv);
+            return;
+        }
 
         // TODO:  Multiple views
         std::vector<Cesium3DTilesSelection::ViewState> viewStates;

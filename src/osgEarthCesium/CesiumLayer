@@ -66,6 +66,11 @@ namespace osgEarth
             int getMinimumRenderableLevel() const;
             void setMinimumRenderableLevel(int level);
 
+            //! Web-map zoom visibility (-1 = bound disabled).
+            void setMapZoomRange(int minZoom, int maxZoom);
+            int getMapZoomMin() const;
+            int getMapZoomMax() const;
+
             //! Optional override style for vector-style 3D Tiles.
             const TilesetRenderStyleOptions& getRenderStyle() const;
             void setRenderStyle(const TilesetRenderStyleOptions& renderStyle);

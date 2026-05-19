@@ -38,12 +38,19 @@ namespace osgEarth { namespace Cesium
         int getMinimumRenderableLevel() const;
         void setMinimumRenderableLevel(int level);
 
+        /// Web-map zoom range (-1 = bound disabled). When out of range, updateView is skipped.
+        void setMapZoomRange(int minZoom, int maxZoom);
+        int getMapZoomMin() const;
+        int getMapZoomMax() const;
+
     private:
         osg::Group* tileParent();
         osg::Group* ensureDrapeRoot();
 
         void* _tileset = nullptr;
         int _minimumRenderableLevel = -1;
+        int _mapZoomMin = -1;
+        int _mapZoomMax = -1;
         bool _clampToGround = false;
         osg::ref_ptr<osgEarth::DrapeableNode> _drapeRoot;
     };

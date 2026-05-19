@@ -202,6 +202,27 @@ CesiumNative3DTilesLayer::setMinimumRenderableLevel(int level)
     }
 }
 
+void
+CesiumNative3DTilesLayer::setMapZoomRange(int minZoom, int maxZoom)
+{
+    if (_tilesetNode)
+    {
+        _tilesetNode->setMapZoomRange(minZoom, maxZoom);
+    }
+}
+
+int
+CesiumNative3DTilesLayer::getMapZoomMin() const
+{
+    return _tilesetNode ? _tilesetNode->getMapZoomMin() : -1;
+}
+
+int
+CesiumNative3DTilesLayer::getMapZoomMax() const
+{
+    return _tilesetNode ? _tilesetNode->getMapZoomMax() : -1;
+}
+
 const TilesetRenderStyleOptions&
 CesiumNative3DTilesLayer::getRenderStyle() const
 {
