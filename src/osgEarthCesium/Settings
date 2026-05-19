@@ -17,6 +17,10 @@ namespace osgEarth {
         OSGEARTHCESIUM_EXPORT bool getLog3DTilesHttpUrls();
         void OSGEARTHCESIUM_EXPORT setLog3DTilesHttpUrls(bool enabled);
 
+        /// Signal in-flight async tile loads to bail out. Cheap atomic; safe from any thread.
+        OSGEARTHCESIUM_EXPORT void requestShutdown();
+        OSGEARTHCESIUM_EXPORT bool isShuttingDown();
+
         OSGEARTHCESIUM_EXPORT void shutdown();
     }
 }

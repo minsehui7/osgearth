@@ -10,6 +10,7 @@
 
 static std::string CESIUM_KEY = "";
 static std::atomic<bool> s_log3DTilesHttpUrls{false};
+static std::atomic<bool> s_cesiumShuttingDown{false};
 
 namespace
 {
@@ -50,7 +51,18 @@ void osgEarth::Cesium::setLog3DTilesHttpUrls(bool enabled)
     s_log3DTilesHttpUrls.store(enabled, std::memory_order_relaxed);
 }
 
+void osgEarth::Cesium::requestShutdown()
+{
+    s_cesiumShuttingDown.store(true, std::memory_order_release);
+}
+
+bool osgEarth::Cesium::isShuttingDown()
+{
+    return s_cesiumShuttingDown.load(std::memory_order_acquire);
+}
+
 void osgEarth::Cesium::shutdown()
 {
+    requestShutdown();
     CesiumIon::instance().shutdown();
 }

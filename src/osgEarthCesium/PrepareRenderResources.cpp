@@ -3,6 +3,7 @@
 * MIT License
 */
 #include "PrepareRenderResources"
+#include "Settings"
 #include <CesiumGltf/Model.h>
 #include <CesiumGltfContent/GltfUtilities.h>
 #include <CesiumGltf/AccessorView.h>
@@ -1421,6 +1422,14 @@ PrepareRendererResources::prepareInLoadThread(
     const glm::dmat4& transform,
     const std::any& rendererOptions)
 {
+    if (isShuttingDown())
+    {
+        return asyncSystem.createResolvedFuture(
+            Cesium3DTilesSelection::TileLoadResultAndRenderResources{
+                std::move(tileLoadResult),
+                nullptr });
+    }
+
     CesiumGltf::Model* model = std::get_if<CesiumGltf::Model>(&tileLoadResult.contentKind);
     if (!model)
     {
@@ -1453,7 +1462,8 @@ PrepareRendererResources::prepareInLoadThread(
         result->renderStyle = *renderStyle;
         result->hasRenderStyle = true;
     }
-    result->node = builder.build();
+    if (!isShuttingDown())
+        result->node = builder.build();
     return asyncSystem.createResolvedFuture(
         Cesium3DTilesSelection::TileLoadResultAndRenderResources{
             std::move(tileLoadResult),

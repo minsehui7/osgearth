@@ -58,7 +58,7 @@ OE_LAYER_PROPERTY_IMPL(CesiumNative3DTilesLayer, std::string, Token, token);
 
 CesiumNative3DTilesLayer::~CesiumNative3DTilesLayer()
 {
-    //nop
+    _tilesetNode = nullptr;
 }
 
 void

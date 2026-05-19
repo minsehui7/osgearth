@@ -28,11 +28,18 @@ Context::~Context()
 
 void Context::shutdown()
 {
-    // Shutdown the task processor
-    taskProcessor->shutdown();
+    if (taskProcessor)
+        taskProcessor->shutdown();
 
-    // Finish off any main thread jobs
-    assetAccessor->tick();
-    asyncSystem.dispatchMainThreadTasks();
+    if (assetAccessor)
+        assetAccessor->tick();
+
+    // Drain a few main-thread continuations without blocking on worker pools.
+    for (int i = 0; i < 8; ++i)
+    {
+        asyncSystem.dispatchMainThreadTasks();
+        if (assetAccessor)
+            assetAccessor->tick();
+    }
 }
 

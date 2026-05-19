@@ -3,14 +3,25 @@
 * MIT License
 */
 #include "TaskProcessor"
+#include "Settings"
+
 #include <osgEarth/Threading>
 #include <osgEarth/Notify>
+
+#include <chrono>
+#include <thread>
 
 using namespace osgEarth;
 using namespace osgEarth::Threading;
 using namespace osgEarth::Cesium;
 
 const std::string CESIUM_ARENA_NAME = "cesium";
+
+namespace {
+
+constexpr int kShutdownWaitMs = 500;
+
+} // namespace
 
 TaskProcessor::TaskProcessor()
 {
@@ -22,20 +33,33 @@ TaskProcessor::~TaskProcessor()
 }
 
 void TaskProcessor::shutdown()
-{    
-    // Wait for all jobs to finish
-    auto metrics = jobs::get_pool(CESIUM_ARENA_NAME)->metrics();
-    unsigned int totalJobs = metrics->pending + metrics->running;
-    while (totalJobs != 0)
+{
+    auto* pool = jobs::get_pool(CESIUM_ARENA_NAME);
+    if (!pool)
+        return;
+
+    pool->cancel_all();
+
+    const auto deadline = std::chrono::steady_clock::now()
+        + std::chrono::milliseconds(kShutdownWaitMs);
+    for (;;)
     {
-        std::this_thread::yield();        
-        totalJobs = metrics->pending + metrics->running;
+        auto* metrics = pool->metrics();
+        const unsigned int active = metrics->pending + metrics->running;
+        if (active == 0)
+            break;
+        if (std::chrono::steady_clock::now() >= deadline)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 }
 
 void TaskProcessor::startTask(std::function<void()> f)
 {
-    auto task = [this, f]() {
+    if (isShuttingDown())
+        return;
+
+    auto task = [f = std::move(f)]() {
         f();
         return true;
     };

@@ -166,8 +166,13 @@ CesiumTilesetNode::CesiumTilesetNode(const std::string& url, const std::string& 
 
 CesiumTilesetNode::~CesiumTilesetNode()
 {
-    Cesium3DTilesSelection::Tileset* tileset = (Cesium3DTilesSelection::Tileset*)_tileset;
+    if (!_tileset)
+        return;
+
+    auto* tileset = static_cast<Cesium3DTilesSelection::Tileset*>(_tileset);
+    tileset->waitForAllLoadsToComplete(150.0);
     delete tileset;
+    _tileset = nullptr;
 }
 
 // ---- Property accessors ------------------------------------------------------
@@ -238,6 +243,12 @@ CesiumTilesetNode::ensureDrapeRoot()
 void
 CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
 {
+    if (isShuttingDown())
+    {
+        osg::Group::traverse(nv);
+        return;
+    }
+
     if (nv.getVisitorType() == nv.CULL_VISITOR)
     {
         const osgUtil::CullVisitor* cv = nv.asCullVisitor();
@@ -274,6 +285,7 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         Cesium3DTilesSelection::ViewState viewState(pos, dir, up, viewportSize, hfov, vfov);
         viewStates.push_back(viewState);
         Cesium3DTilesSelection::Tileset* tileset = (Cesium3DTilesSelection::Tileset*)_tileset;
+        tileset->getAsyncSystem().dispatchMainThreadTasks();
         auto updates = tileset->updateView(viewStates);
 
         // #region agent log

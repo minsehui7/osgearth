@@ -96,6 +96,17 @@ void log3DTilesHttpLine(const char *verb, int statusCode, const std::string &url
     }
 }
 
+template <typename Promise>
+void resolveCancelledGet(
+    const Promise& promise,
+    const std::shared_ptr<AssetRequest>& request)
+{
+    auto response = std::make_unique<AssetResponse>();
+    response->_statusCode = 499;
+    request->setResponse(std::move(response));
+    promise.resolve(request);
+}
+
 } // namespace
 
 /**********************************************/
@@ -169,12 +180,27 @@ AssetAccessor::get(const CesiumAsync::AsyncSystem& asyncSystem,
     const std::string& url,
     const std::vector<CesiumAsync::IAssetAccessor::THeader>& headers)
 {
+    if (isShuttingDown())
+    {
+        auto request = std::make_shared<AssetRequest>("GET", url, headers);
+        auto response = std::make_unique<AssetResponse>();
+        response->_statusCode = 499;
+        request->setResponse(std::move(response));
+        return asyncSystem.createResolvedFuture<std::shared_ptr<CesiumAsync::IAssetRequest>>(request);
+    }
+
     osg::ref_ptr<osgDB::Options> options = _options.get();
     auto request = std::make_shared<AssetRequest>("GET", url, headers);
     return asyncSystem.createFuture<std::shared_ptr<CesiumAsync::IAssetRequest>>(
         [&](const auto& promise)
         {
             asyncSystem.runInWorkerThread([promise, request, url, headers, options]() {
+                if (isShuttingDown())
+                {
+                    resolveCancelledGet(promise, request);
+                    return;
+                }
+
                 const bool logHttp = osgEarth::Cesium::getLog3DTilesHttpUrls();
                 if (logHttp) {
                     log3DTilesHttpLine("GET", 0, url);
@@ -192,6 +218,12 @@ AssetAccessor::get(const CesiumAsync::AsyncSystem& asyncSystem,
                 const bool blacklisted =
                     osgEarth::Registry::instance()->isBlacklisted(uri.full());
                 auto httpResponse = uri.readString(options.get());
+                if (isShuttingDown())
+                {
+                    resolveCancelledGet(promise, request);
+                    return;
+                }
+
                 std::unique_ptr< AssetResponse > response = std::make_unique< AssetResponse >();
 
                 if (httpResponse.code() == ReadResult::RESULT_OK)
