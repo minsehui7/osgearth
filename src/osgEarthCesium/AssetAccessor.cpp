@@ -62,7 +62,7 @@ void agentLogAssetRead(
     int readCode,
     std::size_t contentBytes,
     bool blacklisted) {
-    FILE *f = std::fopen("G:/dev/HyperLiDAR/debug-d0b09c.log", "ab");
+    FILE *f = std::fopen("logs/debug-d0b09c.log", "ab");
     if (!f) {
         return;
     }
