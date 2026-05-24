@@ -1,0 +1,151 @@
+/* osgEarth - Geospatial SDK for OpenSceneGraph
+ * Copyright 2020 Pelican Mapping
+ * MIT License
+ */
+#ifndef OSGEARTH_CESIUM_HYPERTERRAIN_PREPARE_RENDER_RESOURCES_H
+#define OSGEARTH_CESIUM_HYPERTERRAIN_PREPARE_RENDER_RESOURCES_H
+
+#include <Cesium3DTilesSelection/IPrepareRendererResources.h>
+#include <CesiumAsync/Future.h>
+
+#include <glm/glm.hpp>
+
+#include <osg/Geode>
+#include <osg/Geometry>
+#include <osg/Group>
+#include <osg/MatrixTransform>
+#include <osg/ref_ptr>
+#include <osg/StateSet>
+#include <osg/Texture2D>
+
+#include <any>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+
+namespace Cesium3DTilesSelection {
+class Tile;
+}
+
+namespace CesiumRasterOverlays {
+class RasterOverlay;
+}
+
+namespace osgEarth {
+namespace Cesium {
+
+struct HyperTerrainTileRenderData {
+    osg::ref_ptr<osg::MatrixTransform> xform;
+    osg::ref_ptr<osg::Geometry> geom;
+};
+
+struct HyperTerrainTileRenderHandle {
+    uint32_t slot{0};
+    uint32_t generation{0};
+};
+
+class HyperTerrainPrepareRendererResources
+    : public Cesium3DTilesSelection::IPrepareRendererResources {
+public:
+    explicit HyperTerrainPrepareRendererResources(osg::Group* sceneRoot);
+    ~HyperTerrainPrepareRendererResources() override = default;
+
+    CesiumAsync::Future<Cesium3DTilesSelection::TileLoadResultAndRenderResources>
+    prepareInLoadThread(
+        const CesiumAsync::AsyncSystem& asyncSystem,
+        Cesium3DTilesSelection::TileLoadResult&& tileLoadResult,
+        const glm::dmat4& transform,
+        const std::any& rendererOptions) override;
+
+    void* prepareInMainThread(
+        Cesium3DTilesSelection::Tile& tile,
+        void* pLoadThreadResult) override;
+
+    void free(
+        Cesium3DTilesSelection::Tile& tile,
+        void* pLoadThreadResult,
+        void* pMainThreadResult) noexcept override;
+
+    void* prepareInThreadShared(
+        Cesium3DTilesSelection::Tile& tile,
+        void* pLoadThreadResult) { return pLoadThreadResult; }
+
+    void* prepareRasterInLoadThread(
+        CesiumGltf::ImageAsset& image,
+        const std::any& rendererOptions) override;
+
+    void* prepareRasterInMainThread(
+        CesiumRasterOverlays::RasterOverlayTile& rasterTile,
+        void* pLoadThreadResult) override;
+
+    void freeRaster(
+        const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
+        void* pLoadThreadResult,
+        void* pMainThreadResult) noexcept override;
+
+    void attachRasterInMainThread(
+        const Cesium3DTilesSelection::Tile& tile,
+        int32_t overlayTextureCoordinateID,
+        const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
+        void* pMainThreadRendererResources,
+        const glm::dvec2& translation,
+        const glm::dvec2& scale) override;
+
+    void detachRasterInMainThread(
+        const Cesium3DTilesSelection::Tile& tile,
+        int32_t overlayTextureCoordinateID,
+        const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
+        void* pMainThreadRendererResources) noexcept override;
+
+    bool tryResolveTileRenderData(
+        const Cesium3DTilesSelection::Tile& tile,
+        HyperTerrainTileRenderData& outData) const;
+
+    void setRasterOverlayAlpha(
+        const CesiumRasterOverlays::RasterOverlay* overlay,
+        float alpha);
+
+    void setTmsImageryExposure(float exposure);
+
+private:
+    struct TileRenderRecord {
+        HyperTerrainTileRenderData data;
+        uint32_t generation{1};
+        bool alive{false};
+        uint64_t createdTick{0};
+        uint64_t lastAccessTick{0};
+    };
+
+    HyperTerrainTileRenderHandle* allocateHandle(const HyperTerrainTileRenderData& data);
+    bool resolveRenderResources(const void* renderResources, HyperTerrainTileRenderData& outData) const;
+    bool resolveHandle(const HyperTerrainTileRenderHandle* handle, HyperTerrainTileRenderData& outData) const;
+    void releaseHandle(const HyperTerrainTileRenderHandle* handle);
+    float rasterOverlayAlpha(const CesiumRasterOverlays::RasterOverlay* overlay) const;
+
+    struct RasterAttachment {
+        const CesiumRasterOverlays::RasterOverlay* overlay{nullptr};
+        osg::ref_ptr<osg::StateSet> stateSet;
+        osg::ref_ptr<osg::Texture2D> texture;
+        int slot{-1};
+    };
+
+    mutable std::mutex m_storeMutex;
+    mutable std::vector<TileRenderRecord> m_store;
+    std::vector<uint32_t> m_freeSlots;
+    std::vector<std::unique_ptr<HyperTerrainTileRenderHandle>> m_handleStorage;
+    mutable uint64_t m_tickCounter{0};
+    mutable uint32_t m_invalidHandleLogs{0};
+
+    mutable std::mutex m_overlayMutex;
+    std::unordered_map<const CesiumRasterOverlays::RasterOverlay*, float> m_overlayAlpha;
+    std::vector<RasterAttachment> m_rasterAttachments;
+
+    osg::ref_ptr<osg::Group> m_sceneRoot;
+};
+
+} // namespace Cesium
+} // namespace osgEarth
+
+#endif // OSGEARTH_CESIUM_HYPERTERRAIN_PREPARE_RENDER_RESOURCES_H

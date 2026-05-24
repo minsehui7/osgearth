@@ -1,0 +1,41 @@
+/* osgEarth - Geospatial SDK for OpenSceneGraph
+ * Copyright 2020 Pelican Mapping
+ * MIT License
+ */
+#ifndef OSGEARTH_CESIUM_HYPERTERRAIN_RASTER_RENDERER_H
+#define OSGEARTH_CESIUM_HYPERTERRAIN_RASTER_RENDERER_H
+
+#include <CesiumRasterOverlays/IPrepareRasterOverlayRendererResources.h>
+
+#include <osg/Texture2D>
+#include <osg/ref_ptr>
+
+#include <any>
+
+namespace osgEarth {
+namespace Cesium {
+
+class HyperTerrainRasterRenderer
+    : public CesiumRasterOverlays::IPrepareRasterOverlayRendererResources {
+public:
+    HyperTerrainRasterRenderer() = default;
+    ~HyperTerrainRasterRenderer() = default;
+
+    void* prepareRasterInLoadThread(
+        CesiumGltf::ImageAsset& image,
+        const std::any& rendererOptions) override;
+
+    void* prepareRasterInMainThread(
+        CesiumRasterOverlays::RasterOverlayTile& rasterTile,
+        void* pLoadThreadResult) override;
+
+    void freeRaster(
+        const CesiumRasterOverlays::RasterOverlayTile& rasterTile,
+        void* pLoadThreadResult,
+        void* pMainThreadResult) noexcept override;
+};
+
+} // namespace Cesium
+} // namespace osgEarth
+
+#endif // OSGEARTH_CESIUM_HYPERTERRAIN_RASTER_RENDERER_H

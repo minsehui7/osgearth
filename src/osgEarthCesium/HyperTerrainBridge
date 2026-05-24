@@ -1,0 +1,51 @@
+/* osgEarth - Geospatial SDK for OpenSceneGraph
+ * Copyright 2020 Pelican Mapping
+ * MIT License
+ */
+#ifndef OSGEARTH_CESIUM_HYPERTERRAIN_BRIDGE_H
+#define OSGEARTH_CESIUM_HYPERTERRAIN_BRIDGE_H
+
+#include "Export"
+#include "HyperTerrainTypes"
+
+#include <osg/Group>
+
+#include <memory>
+
+namespace osgEarth {
+namespace Cesium {
+
+class HyperTerrainPrepareRendererResources;
+
+/**
+ * Owns cesium-native Tilesets for the HyperTerrain osgEarth engine plugin.
+ * All cesium-native objects live inside osgEarthCesium.dll.
+ */
+class OSGEARTHCESIUM_EXPORT HyperTerrainBridge {
+public:
+    explicit HyperTerrainBridge(osg::Group* tileGroup);
+    ~HyperTerrainBridge();
+
+    HyperTerrainBridge(const HyperTerrainBridge&) = delete;
+    HyperTerrainBridge& operator=(const HyperTerrainBridge&) = delete;
+
+    bool initialize(const HyperTerrainInitOptions& options);
+
+    void updateFrame(const HyperTerrainViewParams& viewParams, bool tilesetReady);
+
+    void addImageryOverlay(RasterOverlayPtr overlay);
+    void removeImageryOverlay(RasterOverlayPtr overlay);
+    void setImageryOverlayAlpha(RasterOverlayPtr overlay, float alpha);
+    void setTmsImageryExposure(float exposure);
+
+    bool hasPrimaryTileset() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> _impl;
+};
+
+} // namespace Cesium
+} // namespace osgEarth
+
+#endif // OSGEARTH_CESIUM_HYPERTERRAIN_BRIDGE_H

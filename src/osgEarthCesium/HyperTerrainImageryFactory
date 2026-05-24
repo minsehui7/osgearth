@@ -1,0 +1,45 @@
+/* osgEarth - Geospatial SDK for OpenSceneGraph
+ * Copyright 2020 Pelican Mapping
+ * MIT License
+ */
+#ifndef OSGEARTH_CESIUM_HYPERTERRAIN_IMAGERY_FACTORY_H
+#define OSGEARTH_CESIUM_HYPERTERRAIN_IMAGERY_FACTORY_H
+
+#include "Export"
+#include "HyperTerrainTypes"
+
+#include <memory>
+#include <string>
+
+namespace spdlog { class logger; }
+
+namespace osgEarth {
+namespace Cesium {
+
+class OSGEARTHCESIUM_EXPORT HyperTerrainImageryFactory {
+public:
+    static constexpr float kDefaultTmsImageryExposure = 3.3f;
+
+    static void setTmsImageryExposure(float exposure);
+    static float tmsImageryExposure();
+
+    static void setImageryTileTransportDiagLogging(bool enabled);
+
+    static std::shared_ptr<spdlog::logger> getOrCreateTilesetLogger();
+
+    static RasterOverlayPtr createVWorldStreet(const std::string& apiKey);
+    static RasterOverlayPtr createVWorldSatellite(const std::string& apiKey);
+    static RasterOverlayPtr createVWorldHybridOverlay(const std::string& apiKey);
+    static RasterOverlayPtr createVWorldLabel();
+    static RasterOverlayPtr createVWorldGray(const std::string& apiKey);
+    static RasterOverlayPtr createVWorldMidnight(const std::string& apiKey);
+    static RasterOverlayPtr createMapboxSatellite();
+    static RasterOverlayPtr createBingMapsAerial(const std::string& ionAccessToken);
+    static RasterOverlayPtr createNaverSatellite();
+    static RasterOverlayPtr createOwmClouds(const std::string& apiKey);
+};
+
+} // namespace Cesium
+} // namespace osgEarth
+
+#endif // OSGEARTH_CESIUM_HYPERTERRAIN_IMAGERY_FACTORY_H

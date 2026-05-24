@@ -1,0 +1,61 @@
+/* osgEarth - Geospatial SDK for OpenSceneGraph
+ * Copyright 2020 Pelican Mapping
+ * MIT License
+ */
+#ifndef OSGEARTH_CESIUM_HYPERTERRAIN_TYPES_H
+#define OSGEARTH_CESIUM_HYPERTERRAIN_TYPES_H
+
+#include "Export"
+
+#ifdef OPAQUE
+#  undef OPAQUE
+#endif
+#ifdef TRANSPARENT
+#  undef TRANSPARENT
+#endif
+
+#include <CesiumGltf/Material.h>
+#include <CesiumRasterOverlays/RasterOverlay.h>
+#include <CesiumUtility/IntrusivePointer.h>
+
+#include <cstdint>
+#include <string>
+
+namespace osgEarth {
+namespace Cesium {
+
+using RasterOverlayPtr =
+    CesiumUtility::IntrusivePointer<CesiumRasterOverlays::RasterOverlay>;
+
+struct OSGEARTHCESIUM_EXPORT HyperTerrainViewParams {
+    double eyeX{0.0};
+    double eyeY{0.0};
+    double eyeZ{0.0};
+    double dirX{0.0};
+    double dirY{0.0};
+    double dirZ{-1.0};
+    double upX{0.0};
+    double upY{1.0};
+    double upZ{0.0};
+    double viewportWidth{1280.0};
+    double viewportHeight{720.0};
+    double viewPixelWidth{0.0};
+    double viewPixelHeight{0.0};
+    bool haveViewPixelDims{false};
+    double vFovRad{0.698132};
+    bool hasCameraData{false};
+};
+
+struct OSGEARTHCESIUM_EXPORT HyperTerrainInitOptions {
+    std::string terrainEndpoint;
+    std::string ionAccessToken;
+    int64_t ionAssetId{0};
+    std::string fallbackIonAssetIdStr;
+    bool logTileHttpUrls{false};
+    double maximumScreenSpaceError{16.0};
+};
+
+} // namespace Cesium
+} // namespace osgEarth
+
+#endif // OSGEARTH_CESIUM_HYPERTERRAIN_TYPES_H

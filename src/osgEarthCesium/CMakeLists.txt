@@ -24,7 +24,11 @@ if (CESIUM_NATIVE_FOUND)
         Context.cpp
         PrepareRenderResources.cpp
         Settings.cpp
-        TaskProcessor.cpp)
+        TaskProcessor.cpp
+        HyperTerrainBridge.cpp
+        HyperTerrainPrepareRendererResources.cpp
+        HyperTerrainRasterRenderer.cpp
+        HyperTerrainImageryFactory.cpp)
         
     set(TARGET_H
         CesiumTilesetNode
@@ -36,7 +40,10 @@ if (CESIUM_NATIVE_FOUND)
         Settings
         AssetAccessor
         PrepareRenderResources
-        TaskProcessor)
+        TaskProcessor
+        HyperTerrainTypes
+        HyperTerrainBridge
+        HyperTerrainImageryFactory)
 
     set(CMAKE_CXX_STANDARD 20)
 
