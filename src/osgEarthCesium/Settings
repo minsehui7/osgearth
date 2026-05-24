@@ -6,6 +6,7 @@
 #define OSGEARTH_CESIUM_SETTINGS_H
 
 #include "Export"
+#include <functional>
 #include <string>
 
 namespace osgEarth {
@@ -22,6 +23,11 @@ namespace osgEarth {
         OSGEARTHCESIUM_EXPORT bool isShuttingDown();
 
         OSGEARTHCESIUM_EXPORT void shutdown();
+
+        using TileRebuildsPerFrameFn = std::function<double()>;
+        OSGEARTHCESIUM_EXPORT void setTileRebuildsPerFrameProvider(TileRebuildsPerFrameFn fn);
+        /// Fractional tile main-thread rebuild budget per frame (default 0.25 when no provider).
+        OSGEARTHCESIUM_EXPORT double tileRebuildsPerFrameRate();
     }
 }
 

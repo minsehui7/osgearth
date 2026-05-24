@@ -11,6 +11,10 @@
 #include <osgEarth/DrapeableNode>
 #include <vector>
 
+namespace Cesium3DTilesSelection {
+class Tileset;
+}
+
 namespace osgEarth { class Map; }
 
 namespace osgEarth { namespace Cesium
@@ -47,11 +51,14 @@ namespace osgEarth { namespace Cesium
         osg::Group* tileParent();
         osg::Group* ensureDrapeRoot();
 
+        void applyMainThreadRebuildBudget(Cesium3DTilesSelection::Tileset* tileset);
+
         void* _tileset = nullptr;
         int _minimumRenderableLevel = -1;
         int _mapZoomMin = -1;
         int _mapZoomMax = -1;
         bool _clampToGround = false;
+        double _rebuildBudgetCredit = 0.0;
         osg::ref_ptr<osgEarth::DrapeableNode> _drapeRoot;
     };
 } }

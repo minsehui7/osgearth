@@ -2,7 +2,9 @@
 # FindCesiumNative.cmake
 #
 # Inputs:
-#   CESIUM_NATIVE_DIR : folder containing include/ and lib/ for Cesium Native
+#   CESIUM_NATIVE_DIR : cesium-native install prefix, or x64/Release or x64/Debug.
+#       When the path ends in /Release or /Debug, the sibling config under the same
+#       x64/ parent is used automatically so a single configure works for VS Debug+Release.
 #       (or "CESIUM_NATIVE_DIR" environment variable)
 #
 # Outputs:
@@ -22,15 +24,36 @@ set(CESIUM_NATIVE_VCPKG_INSTALLED "" CACHE PATH "Optional vcpkg_installed root f
 
 unset(CESIUM_NATIVE_FOUND)
 unset(CESIUM_NATIVE_INCLUDE_DIR CACHE)
+unset(CESIUM_NATIVE_INCLUDE_DIR_RELEASE CACHE)
+unset(CESIUM_NATIVE_INCLUDE_DIR_DEBUG CACHE)
 
-# Location the cesium-native installation:
-find_path(CESIUM_NATIVE_INCLUDE_DIR CesiumUtility/Uri.h
-    PATHS
-        ${CESIUM_NATIVE_DIR}
-        $ENV{CESIUM_NATIVE_DIR}
-    PATH_SUFFIXES
-        include )
-        
+# Per-config install roots (HyperLiDAR: cesium-native/x64/{Release,Debug}).
+if(CESIUM_NATIVE_DIR MATCHES "[/\\\\](Release|Debug)$")
+    get_filename_component(_CESIUM_X64_PARENT "${CESIUM_NATIVE_DIR}" DIRECTORY)
+    set(CESIUM_NATIVE_DIR_RELEASE "${_CESIUM_X64_PARENT}/Release")
+    set(CESIUM_NATIVE_DIR_DEBUG "${_CESIUM_X64_PARENT}/Debug")
+elseif(DEFINED ENV{CESIUM_NATIVE_DIR} AND "$ENV{CESIUM_NATIVE_DIR}" MATCHES "[/\\\\](Release|Debug)$")
+    get_filename_component(_CESIUM_X64_PARENT "$ENV{CESIUM_NATIVE_DIR}" DIRECTORY)
+    set(CESIUM_NATIVE_DIR_RELEASE "${_CESIUM_X64_PARENT}/Release")
+    set(CESIUM_NATIVE_DIR_DEBUG "${_CESIUM_X64_PARENT}/Debug")
+else()
+    set(CESIUM_NATIVE_DIR_RELEASE "${CESIUM_NATIVE_DIR}")
+    set(CESIUM_NATIVE_DIR_DEBUG "${CESIUM_NATIVE_DIR}")
+endif()
+
+find_path(CESIUM_NATIVE_INCLUDE_DIR_RELEASE CesiumUtility/Uri.h
+    PATHS ${CESIUM_NATIVE_DIR_RELEASE}
+    PATH_SUFFIXES include
+    NO_DEFAULT_PATH)
+
+find_path(CESIUM_NATIVE_INCLUDE_DIR_DEBUG CesiumUtility/Uri.h
+    PATHS ${CESIUM_NATIVE_DIR_DEBUG}
+    PATH_SUFFIXES include
+    NO_DEFAULT_PATH)
+
+# Legacy single include dir (Release) for older call sites.
+set(CESIUM_NATIVE_INCLUDE_DIR "${CESIUM_NATIVE_INCLUDE_DIR_RELEASE}" CACHE PATH "" FORCE)
+
 set(CESIUM_ANY_LIBRARY_MISSING FALSE)
         
 # Macro to locate each cesium library.
@@ -43,15 +66,11 @@ macro(find_cesium_library MY_LIBRARY_VAR MY_LIBRARY_NAME)
 
     if (NOT CESIUM_ANY_LIBRARY_MISSING)
         # Release 링크는 절대 vcpkg debug/lib 를 먼저 잡으면 안 됨(동일 파일명·Debug CRT → __calloc_dbg 등).
-        set(_CESIUM_RELEASE_LIB_PATHS
-            "${CESIUM_NATIVE_DIR}/lib"
-            "$ENV{CESIUM_NATIVE_DIR}")
+        set(_CESIUM_RELEASE_LIB_PATHS "${CESIUM_NATIVE_DIR_RELEASE}/lib")
         if(CESIUM_NATIVE_VCPKG_INSTALLED)
             list(APPEND _CESIUM_RELEASE_LIB_PATHS "${CESIUM_NATIVE_VCPKG_INSTALLED}/lib")
         endif()
-        set(_CESIUM_DEBUG_LIB_PATHS
-            "${CESIUM_NATIVE_DIR}/lib"
-            "$ENV{CESIUM_NATIVE_DIR}")
+        set(_CESIUM_DEBUG_LIB_PATHS "${CESIUM_NATIVE_DIR_DEBUG}/lib")
         if(CESIUM_NATIVE_VCPKG_INSTALLED)
             list(APPEND _CESIUM_DEBUG_LIB_PATHS
                 "${CESIUM_NATIVE_VCPKG_INSTALLED}/debug/lib"
@@ -78,9 +97,9 @@ macro(find_cesium_library MY_LIBRARY_VAR MY_LIBRARY_NAME)
 
         set(MY_DEBUG_LIBRARY "${${MY_LIBRARY_VAR}_LIBRARY_DEBUG}")
         set(MY_RELEASE_LIBRARY "${${MY_LIBRARY_VAR}_LIBRARY_RELEASE}")
-        # MSVC static vcpkg deps often use the same .lib name for Debug/Release (no "d" suffix).
-        # If debug/lib has no match, fall back to release only as a last resort.
-        if(MY_RELEASE_LIBRARY AND NOT MY_DEBUG_LIBRARY)
+        # Single-prefix legacy layout only: share Release libs for Debug when no Debug tree exists.
+        if(MY_RELEASE_LIBRARY AND NOT MY_DEBUG_LIBRARY
+                AND CESIUM_NATIVE_DIR_DEBUG STREQUAL CESIUM_NATIVE_DIR_RELEASE)
             set(MY_DEBUG_LIBRARY "${MY_RELEASE_LIBRARY}")
         endif()
         

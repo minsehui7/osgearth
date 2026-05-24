@@ -13,6 +13,7 @@
 #include <osgEarth/Progress>
 #include <osgUtil/CullVisitor>
 #include <Cesium3DTilesSelection/BoundingVolume.h>
+#include <Cesium3DTilesSelection/Tileset.h>
 
 #include <algorithm>
 #include <chrono>
@@ -269,6 +270,30 @@ CesiumTilesetNode::ensureDrapeRoot()
     return _drapeRoot.get();
 }
 
+void CesiumTilesetNode::applyMainThreadRebuildBudget(Cesium3DTilesSelection::Tileset* tileset)
+{
+    if (!tileset) {
+        return;
+    }
+
+    Cesium3DTilesSelection::TilesetOptions& options = tileset->getOptions();
+    const double rate = tileRebuildsPerFrameRate();
+    if (rate <= 0.0) {
+        options.mainThreadLoadingTimeLimit = 0.0;
+        options.maximumMainThreadTilesPerLoadPass = 0;
+        options.enforceMainThreadTilesPerLoadPass = false;
+        return;
+    }
+
+    // Defer main-thread glTF→OSG finish to the FIFO queue; cap by fractional budget.
+    options.mainThreadLoadingTimeLimit = 86400000.0;
+    options.enforceMainThreadTilesPerLoadPass = true;
+    _rebuildBudgetCredit += rate;
+    const int budget = static_cast<int>(std::floor(_rebuildBudgetCredit));
+    _rebuildBudgetCredit -= static_cast<double>(budget);
+    options.maximumMainThreadTilesPerLoadPass = static_cast<uint32_t>(std::max(0, budget));
+}
+
 // ---- Traversal ---------------------------------------------------------------
 
 void
@@ -323,6 +348,7 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         Cesium3DTilesSelection::ViewState viewState(pos, dir, up, viewportSize, hfov, vfov);
         viewStates.push_back(viewState);
         Cesium3DTilesSelection::Tileset* tileset = (Cesium3DTilesSelection::Tileset*)_tileset;
+        applyMainThreadRebuildBudget(tileset);
         tileset->getAsyncSystem().dispatchMainThreadTasks();
         auto updates = tileset->updateView(viewStates);
 

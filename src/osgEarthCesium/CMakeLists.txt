@@ -66,10 +66,9 @@ if (CESIUM_NATIVE_FOUND)
         target_compile_options(${LIB_NAME} PRIVATE /Zc:__cplusplus /utf-8 /bigobj)
     endif()
 
-    # Include the Cesium Native headers BEFORE anything else to ensure that dependencies
-    # that might be duplicated like spdlog are included from the Cesium Native headers.
-    # Note: we had to comment out the INTERFACE_INCLUDE_DIRECTORIES from the OE::CESIUM_NATIVE import
-    # library to make this work!
-    include_directories(BEFORE ${CESIUM_NATIVE_INCLUDE_DIR})
+    # Include Cesium Native headers BEFORE anything else (config-specific install prefix).
+    target_include_directories(${LIB_NAME} BEFORE PRIVATE
+        "$<$<CONFIG:Debug>:${CESIUM_NATIVE_INCLUDE_DIR_DEBUG}>"
+        "$<$<NOT:$<CONFIG:Debug>>:${CESIUM_NATIVE_INCLUDE_DIR_RELEASE}>")
 
 endif()

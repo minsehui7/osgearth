@@ -7,10 +7,12 @@
 #include "CesiumIon"
 
 #include <atomic>
+#include <algorithm>
 
 static std::string CESIUM_KEY = "";
 static std::atomic<bool> s_log3DTilesHttpUrls{false};
 static std::atomic<bool> s_cesiumShuttingDown{false};
+static osgEarth::Cesium::TileRebuildsPerFrameFn s_tileRebuildsPerFrameProvider;
 
 namespace
 {
@@ -65,4 +67,17 @@ void osgEarth::Cesium::shutdown()
 {
     requestShutdown();
     CesiumIon::instance().shutdown();
+}
+
+void osgEarth::Cesium::setTileRebuildsPerFrameProvider(TileRebuildsPerFrameFn fn)
+{
+    s_tileRebuildsPerFrameProvider = std::move(fn);
+}
+
+double osgEarth::Cesium::tileRebuildsPerFrameRate()
+{
+    if (s_tileRebuildsPerFrameProvider) {
+        return std::max(0.0, s_tileRebuildsPerFrameProvider());
+    }
+    return 0.25;
 }
