@@ -211,7 +211,7 @@ HyperTerrainImageryFactory::createOwmClouds(const std::string& apiKey)
         "?appid=" + apiKey;
 
     UrlTemplateRasterOverlayOptions opts;
-    opts.maximumLevel = 1;
+    opts.maximumLevel = 5;
     opts.minimumLevel = 0;
 
     return new UrlTemplateRasterOverlay("OwmClouds", url, {}, opts, currentRasterOverlayOpts());
