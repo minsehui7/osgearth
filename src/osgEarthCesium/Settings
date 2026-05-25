@@ -15,8 +15,19 @@ namespace osgEarth {
         OSGEARTHCESIUM_EXPORT std::string  getCesiumIonKey();
         void OSGEARTHCESIUM_EXPORT setCesiumIonKey(const std::string& key);
 
-        OSGEARTHCESIUM_EXPORT bool getLog3DTilesHttpUrls();
-        void OSGEARTHCESIUM_EXPORT setLog3DTilesHttpUrls(bool enabled);
+        /// 3D Tiles HTTP request lines ([3DTiles] on stderr). Off = no output; on = osg notify level.
+        OSGEARTHCESIUM_EXPORT bool getLog3DTilesRequest();
+        void OSGEARTHCESIUM_EXPORT setLog3DTilesRequest(bool enabled);
+
+        /// Terrain tile request logging (GPU AssetAccessor OE_DEBUG, CPU quantized-mesh,
+        /// cesium-native terrain messages on cesium_tileset). Off = no output; on = osg notify level.
+        OSGEARTHCESIUM_EXPORT bool getLogTerrainRequest();
+        void OSGEARTHCESIUM_EXPORT setLogTerrainRequest(bool enabled);
+
+        /// Terrain imagery (Mapbox/VWorld/Naver/OWM raster overlay) transport logging
+        /// (cesium_tileset imagery messages). Off = no output; on = spdlog default logger level.
+        OSGEARTHCESIUM_EXPORT bool getLogTmsRequest();
+        void OSGEARTHCESIUM_EXPORT setLogTmsRequest(bool enabled);
 
         /// Signal in-flight async tile loads to bail out. Cheap atomic; safe from any thread.
         OSGEARTHCESIUM_EXPORT void requestShutdown();

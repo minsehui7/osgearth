@@ -1,0 +1,54 @@
+/* osgEarth
+ * Copyright 2025 Pelican Mapping
+ * MIT License
+ */
+#ifndef OSGEARTH_LOCAL_TERRAIN_URI_H
+#define OSGEARTH_LOCAL_TERRAIN_URI_H
+
+#include <osgEarth/Common>
+#include <osgEarth/LocalTerrainFileStore>
+
+#include <optional>
+#include <string>
+
+namespace osgEarth {
+
+struct OSGEARTH_EXPORT LocalTerrainEndpoints {
+    std::string layerJsonUrl;
+    std::string tileBaseUrl;
+    LocalTerrainLocation location;
+};
+
+class OSGEARTH_EXPORT LocalTerrainUri {
+public:
+    static std::filesystem::path normalizeRootPath(const std::string& root);
+    /** Remove ?query and #fragment (layer.json tile URLs append ?v= and extensions). */
+    static std::string stripQueryAndFragment(std::string url);
+    static std::string fileUrlToNativePath(const std::string& fileUrl);
+    /** file:// only: native path with ?query stripped. Other URLs returned unchanged. */
+    static std::string nativePathToFileUrl(const std::filesystem::path& path);
+    static std::string ensureTrailingSlash(std::string url);
+    /** True for file://…/z/x/y.terrain with optional ?query suffix. */
+    static bool isTerrainTileFileUrl(const std::string& url);
+    /** file:// or Windows absolute C:/…/z/x/y.terrain request URLs. */
+    static bool isLocalTerrainTileRequest(const std::string& url);
+    /** Native filesystem path for a local terrain tile request (query stripped). */
+    static std::filesystem::path terrainTileNativePathFromUrl(const std::string& url);
+
+    static std::optional<LocalTerrainEndpoints> resolveLocalTerrain(
+        const std::string& root,
+        const std::string& tileset);
+
+    static std::optional<LocalTerrainLocation> parseTerrainTileFileUrl(
+        const std::string& fileUrl);
+
+    static bool tryParseTerrainTileCoords(
+        const std::filesystem::path& nativePath,
+        uint64_t& outZ,
+        uint64_t& outX,
+        uint64_t& outY);
+};
+
+} // namespace osgEarth
+
+#endif

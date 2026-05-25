@@ -51,7 +51,7 @@ struct OSGEARTHCESIUM_EXPORT HyperTerrainInitOptions {
     std::string ionAccessToken;
     int64_t ionAssetId{0};
     std::string fallbackIonAssetIdStr;
-    bool logTileHttpUrls{false};
+    bool logTmsRequest{false};
     double maximumScreenSpaceError{16.0};
 };
 

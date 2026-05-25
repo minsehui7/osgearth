@@ -1,0 +1,63 @@
+/* osgEarth
+ * Copyright 2025 Pelican Mapping
+ * MIT License
+ */
+#ifndef OSGEARTH_LOCAL_TERRAIN_FILE_STORE_H
+#define OSGEARTH_LOCAL_TERRAIN_FILE_STORE_H
+
+#include <osgEarth/Common>
+
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace osgEarth {
+
+struct OSGEARTH_EXPORT LocalTerrainLocation {
+    std::filesystem::path root;
+    std::string tileset;
+};
+
+class OSGEARTH_EXPORT LocalTerrainFileStore {
+public:
+    static std::filesystem::path layerPath(const LocalTerrainLocation& location);
+    static std::filesystem::path tilePath(
+        const LocalTerrainLocation& location,
+        uint64_t z,
+        uint64_t x,
+        uint64_t y);
+
+    static bool tilesetExists(const LocalTerrainLocation& location);
+    static bool isRootTile(uint64_t z, uint64_t x, uint64_t y);
+
+    static std::optional<std::vector<std::byte>> readFile(const std::filesystem::path& path);
+    /** Read local terrain tile from request URL (file:// or C:/…/z/x/y.terrain). */
+    static std::optional<std::vector<std::byte>> readTerrainTileFromRequestUrl(
+        const std::string& requestUrl);
+    /** Read tile at native z/x/y.terrain path; gunzip and blank root fallback. */
+    static std::optional<std::vector<std::byte>> readTerrainTileAtNativePath(
+        const std::filesystem::path& nativeTilePath,
+        uint64_t z,
+        uint64_t x,
+        uint64_t y);
+    static std::optional<std::vector<std::byte>> readTerrainTile(
+        const LocalTerrainLocation& location,
+        uint64_t z,
+        uint64_t x,
+        uint64_t y);
+    static std::optional<std::vector<std::byte>> readLayerJson(
+        const LocalTerrainLocation& location);
+
+    static std::optional<std::string> gunzipTerrainBytes(const std::string& raw);
+
+    /** Gzip bytes for missing EPSG:4326 root tile 0/{0|1}/0 (quantized-mesh-1.0). */
+    static const std::byte* blankRootTileGzipData(uint64_t rootX);
+    static std::size_t blankRootTileGzipSize(uint64_t rootX);
+    static std::optional<std::vector<std::byte>> readBlankRootTileUncompressed(uint64_t rootX);
+};
+
+} // namespace osgEarth
+
+#endif

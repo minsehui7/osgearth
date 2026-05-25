@@ -23,7 +23,11 @@ public:
     static void setTmsImageryExposure(float exposure);
     static float tmsImageryExposure();
 
+    /// @deprecated Prefer osgEarth::Cesium::setLogTmsRequest; refreshes cesium_tileset logger level.
     static void setImageryTileTransportDiagLogging(bool enabled);
+
+    /// Sync cesium_tileset logger level with spdlog default (call after log flag / level changes).
+    static void refreshTilesetLoggerLevel();
 
     static std::shared_ptr<spdlog::logger> getOrCreateTilesetLogger();
 

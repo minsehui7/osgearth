@@ -147,9 +147,7 @@ namespace osgEarth
         void setFastFailOnServerError(bool value) { _fastFailOnServerError = value; }
         bool getFastFailOnServerError() const { return _fastFailOnServerError; }
 
-        //! Logs quantized-mesh terrain tile request URLs and response codes.
         static void setLogTerrainHttpResponses(bool value);
-        static bool getLogTerrainHttpResponses();
 
     public: // Layer
 

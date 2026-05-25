@@ -16,6 +16,8 @@
 #include <Cesium3DTilesSelection/TilesetOptions.h>
 #include <Cesium3DTilesSelection/ViewState.h>
 #include <Cesium3DTilesSelection/ViewUpdateResult.h>
+#include <CesiumGeometry/QuadtreeTileID.h>
+#include <CesiumGeospatial/Cartographic.h>
 #include <CesiumGeospatial/Ellipsoid.h>
 
 #include <osgEarth/Notify>
@@ -34,39 +36,85 @@ namespace {
 constexpr const char* kDefaultCesiumIonServer = "https://api.cesium.com/";
 
 using Cesium3DTilesSelection::Tile;
+using Cesium3DTilesSelection::TileID;
+using CesiumGeometry::QuadtreeTileID;
+using CesiumGeometry::UpsampledQuadtreeNode;
+using CesiumGeospatial::Cartographic;
 using CesiumGeospatial::GlobeRectangle;
 using CesiumEllipsoid = CesiumGeospatial::Ellipsoid;
 
-void appendGlobeRectsFromTiles(
+struct PrimaryCoverageTile {
+    GlobeRectangle rect;
+    uint32_t level;
+};
+
+std::optional<uint32_t> quadtreeLevelFromTile(const Tile& tile)
+{
+    const TileID& id = tile.getTileID();
+    if (const auto* quadId = std::get_if<QuadtreeTileID>(&id))
+        return quadId->level;
+    if (const auto* upsampled = std::get_if<UpsampledQuadtreeNode>(&id))
+        return upsampled->tileID.level;
+    return std::nullopt;
+}
+
+bool isUpsampledPrimaryTile(const Tile& tile)
+{
+    return std::holds_alternative<UpsampledQuadtreeNode>(tile.getTileID());
+}
+
+void appendPrimaryCoverageFromTiles(
     const std::vector<Tile::ConstPointer>& tiles,
     const CesiumEllipsoid& ellipsoid,
-    std::vector<GlobeRectangle>& out)
+    bool excludeUpsampled,
+    std::vector<PrimaryCoverageTile>& out)
 {
     for (const auto& tilePtr : tiles) {
         if (!tilePtr)
             continue;
+        if (excludeUpsampled && isUpsampledPrimaryTile(*tilePtr))
+            continue;
+
+        const std::optional<uint32_t> level = quadtreeLevelFromTile(*tilePtr);
+        // z=0 blank root covers a hemisphere but is not real local coverage.
+        if (!level || *level == 0)
+            continue;
+
         const auto bv = Cesium3DTilesSelection::transformBoundingVolume(
             tilePtr->getTransform(), tilePtr->getBoundingVolume());
         if (auto gr = Cesium3DTilesSelection::estimateGlobeRectangle(bv, ellipsoid))
-            out.push_back(*gr);
+            out.push_back({*gr, *level});
     }
 }
 
-bool globeRectOverlapsAny(
-    const std::optional<GlobeRectangle>& rect,
-    const std::vector<GlobeRectangle>& rects)
+bool primaryCoversFallbackTile(
+    const std::optional<GlobeRectangle>& fallbackGlobe,
+    uint32_t fallbackLevel,
+    const std::vector<PrimaryCoverageTile>& primaryTiles)
 {
-    if (!rect || rect->isEmpty())
+    if (!fallbackGlobe || fallbackGlobe->isEmpty())
         return false;
-    for (const GlobeRectangle& pr : rects) {
-        if (pr.isEmpty())
+
+    const Cartographic fbCenter = fallbackGlobe->computeCenter();
+
+    for (const PrimaryCoverageTile& primary : primaryTiles) {
+        if (primary.level < fallbackLevel)
             continue;
-        if (auto inter = rect->computeIntersection(pr)) {
-            if (!inter->isEmpty())
-                return true;
-        }
+        // Hide Ion only when a local tile at equal/finer LOD actually covers
+        // this geographic cell — not when a sibling tile merely shares an edge.
+        if (primary.rect.contains(fbCenter))
+            return true;
     }
     return false;
+}
+
+void destroyTilesetQuietly(std::unique_ptr<Cesium3DTilesSelection::Tileset>& tileset)
+{
+    if (!tileset) {
+        return;
+    }
+    tileset->waitForAllLoadsToComplete(150.0);
+    tileset.reset();
 }
 
 Cesium3DTilesSelection::ViewState buildViewState(const HyperTerrainViewParams& p)
@@ -106,15 +154,13 @@ HyperTerrainBridge::HyperTerrainBridge(osg::Group* tileGroup)
 
 HyperTerrainBridge::~HyperTerrainBridge()
 {
-    _impl->primaryTileset.reset();
-    _impl->fallbackTileset.reset();
+    destroyTilesetQuietly(_impl->fallbackTileset);
+    destroyTilesetQuietly(_impl->primaryTileset);
     _impl->renderer.reset();
 }
 
 bool HyperTerrainBridge::initialize(const HyperTerrainInitOptions& options)
 {
-    HyperTerrainImageryFactory::setImageryTileTransportDiagLogging(options.logTileHttpUrls);
-
     _impl->renderer = std::make_shared<HyperTerrainPrepareRendererResources>(_impl->tileGroup.get());
     _impl->context = CesiumIon::instance().getContext(kDefaultCesiumIonServer);
 
@@ -194,8 +240,14 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
         _impl->tileGroup->getChild(i)->setNodeMask(0x0);
     }
 
-    std::vector<GlobeRectangle> primaryRects;
-    appendGlobeRectsFromTiles(primaryResult.tilesToRenderThisFrame, CesiumEllipsoid::WGS84, primaryRects);
+    const bool dualTerrain = _impl->fallbackTileset != nullptr;
+
+    std::vector<PrimaryCoverageTile> primaryCoverage;
+    appendPrimaryCoverageFromTiles(
+        primaryResult.tilesToRenderThisFrame,
+        CesiumEllipsoid::WGS84,
+        dualTerrain,
+        primaryCoverage);
 
     auto tryShowTile = [this](const Tile::ConstPointer& tilePtr) {
         if (!tilePtr || !_impl->renderer)
@@ -220,8 +272,11 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
         return true;
     };
 
-    for (const auto& tilePtr : primaryResult.tilesToRenderThisFrame)
+    for (const auto& tilePtr : primaryResult.tilesToRenderThisFrame) {
+        if (dualTerrain && tilePtr && isUpsampledPrimaryTile(*tilePtr))
+            continue;
         tryShowTile(tilePtr);
+    }
 
     if (fallbackResult.has_value()) {
         for (const auto& tilePtr : fallbackResult->tilesToRenderThisFrame) {
@@ -230,7 +285,8 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
             const auto bv = Cesium3DTilesSelection::transformBoundingVolume(
                 tilePtr->getTransform(), tilePtr->getBoundingVolume());
             const auto fbGlobe = Cesium3DTilesSelection::estimateGlobeRectangle(bv, CesiumEllipsoid::WGS84);
-            if (globeRectOverlapsAny(fbGlobe, primaryRects))
+            const uint32_t fbLevel = quadtreeLevelFromTile(*tilePtr).value_or(0u);
+            if (primaryCoversFallbackTile(fbGlobe, fbLevel, primaryCoverage))
                 continue;
             tryShowTile(tilePtr);
         }

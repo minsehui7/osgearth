@@ -16,9 +16,7 @@
 #include <Cesium3DTilesSelection/Tileset.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -77,48 +75,6 @@ namespace
         const double mpp = viewHeightMeters / std::max(viewportHeightPx, 1.0);
         return std::log2(kEarthCircumferenceM / (mpp * kTilePixels));
     }
-
-    // #region agent log
-    void agentSessionLog(
-        const char *hypothesisId,
-        const char *location,
-        const char *message,
-        double viewZoom,
-        int minRenderLevel,
-        std::size_t tilesToRender,
-        uint32_t tilesVisited,
-        uint32_t maxDepthVisited,
-        int32_t workerLoadQueueLength) {
-        try
-        {
-            std::filesystem::create_directories("logs");
-        }
-        catch (...)
-        {
-        }
-        FILE *f = std::fopen("logs/cesium-selection-diagnostics.log", "ab");
-        if (!f) {
-            return;
-        }
-        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch());
-        std::fprintf(
-            f,
-            "{\"sessionId\":\"9cefe4\",\"hypothesisId\":\"%s\",\"location\":\"%s\",\"message\":\"%s\","
-            "\"data\":{\"viewZoom\":%.4f,\"minRenderLevel\":%d,\"tilesToRender\":%zu,\"tilesVisited\":%u,\"maxDepthVisited\":%u,\"workerLoadQueueLength\":%d},\"timestamp\":%lld}\n",
-            hypothesisId,
-            location,
-            message,
-            viewZoom,
-            minRenderLevel,
-            tilesToRender,
-            tilesVisited,
-            maxDepthVisited,
-            workerLoadQueueLength,
-            static_cast<long long>(ms.count()));
-        std::fclose(f);
-    }
-    // #endregion
 
 }
 
@@ -351,29 +307,6 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         applyMainThreadRebuildBudget(tileset);
         tileset->getAsyncSystem().dispatchMainThreadTasks();
         auto updates = tileset->updateView(viewStates);
-
-        // #region agent log
-        {
-            static std::chrono::steady_clock::time_point s_lastUpdateLog{};
-            const auto now = std::chrono::steady_clock::now();
-            const std::size_t nTiles = updates.tilesToRenderThisFrame.size();
-            const bool first = (s_lastUpdateLog == std::chrono::steady_clock::time_point{});
-            if (first || nTiles > 0 ||
-                now - s_lastUpdateLog >= std::chrono::seconds(3)) {
-                s_lastUpdateLog = now;
-                agentSessionLog(
-                    first ? "H4" : "H6",
-                    "CesiumTilesetNode.cpp:traverse",
-                    first ? "first_update_view" : "update_view",
-                    viewZoom,
-                    _minimumRenderableLevel,
-                    nTiles,
-                    updates.tilesVisited,
-                    updates.maxDepthVisited,
-                    updates.workerThreadTileLoadQueueLength);
-            }
-        }
-        // #endregion
 
         osg::Group* parent = tileParent();
         std::vector<osg::ref_ptr<osg::Node>> displayNodes;

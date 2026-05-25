@@ -16,6 +16,7 @@ find_package(geos QUIET)
 find_package(blend2d QUIET)
 find_package(spdlog QUIET)
 find_package(meshoptimizer QUIET)
+find_package(ZLIB REQUIRED)
 if (OSGEARTH_ENABLE_S3)
     find_package(AWSSDK CONFIG COMPONENTS core s3 QUIET)
 endif()
@@ -512,6 +513,8 @@ set(TARGET_SRC
     CascadeDrapingDecorator.cpp
     CentroidFilter.cpp
     CesiumIon.cpp
+    LocalTerrainFileStore.cpp
+    LocalTerrainUri.cpp
     Chonk.cpp
     CircleNode.cpp
     ClampableNode.cpp
@@ -962,14 +965,14 @@ if(NOT NRL_STATIC_LIBRARIES)
         PUBLIC
             ${OPENSCENEGRAPH_LIBRARIES}
         PRIVATE
-            OpenGL::GL CURL::libcurl GDAL::GDAL)
+            OpenGL::GL CURL::libcurl GDAL::GDAL ZLIB::ZLIB)
 else()
     # special-purpose custom link:
     target_link_libraries(${LIB_NAME} 
         PUBLIC
             ${OPENSCENEGRAPH_LIBRARIES}
         PRIVATE
-            OpenGL::GL CURL::libcurl GDAL::GDAL
+            OpenGL::GL CURL::libcurl GDAL::GDAL ZLIB::ZLIB
             ${SSL_EAY_RELEASE} ${LIB_EAY_RELEASE} ${TIFF_LIBRARY} ${PROJ4_LIBRARY} ${PNG_LIBRARY} ${JPEG_LIBRARY})
 endif()
 

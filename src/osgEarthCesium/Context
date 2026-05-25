@@ -18,6 +18,7 @@
 #include <Cesium3DTilesSelection/Tileset.h>
 #include <CesiumRasterOverlays/IonRasterOverlay.h>
 #include <CesiumAsync/AsyncSystem.h>
+#include <CesiumAsync/IAssetAccessor.h>
 #include <CesiumIonClient/Connection.h>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -39,7 +40,7 @@ namespace osgEarth {
             void shutdown();
 
             std::shared_ptr< PrepareRendererResources > prepareRenderResources;
-            std::shared_ptr<AssetAccessor> assetAccessor;
+            std::shared_ptr<CesiumAsync::IAssetAccessor> assetAccessor;
             std::shared_ptr<TaskProcessor> taskProcessor;
             std::shared_ptr< spdlog::logger > logger;
             std::shared_ptr< CesiumUtility::CreditSystem > creditSystem;

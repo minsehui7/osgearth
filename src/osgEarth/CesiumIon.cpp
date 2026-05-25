@@ -12,10 +12,14 @@
 #include <osgEarth/Locators>
 #include <osgEarth/GeoData>
 #include <osgEarth/Progress>
+#include <osgEarth/LocalTerrainFileStore>
+#include <osgEarth/LocalTerrainUri>
 
 #include <osgUtil/SmoothingVisitor>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <sstream>
 
 using namespace osgEarth;
 using namespace osgEarth::Contrib::ThreeDTiles;
@@ -674,6 +678,58 @@ namespace
             assetBase.context());
     }
 
+    static std::string localPathForFileUrl(const std::string& url)
+    {
+        return LocalTerrainUri::fileUrlToNativePath(url);
+    }
+
+    static std::optional<std::string> readLocalTerrainTileBytes(const URI& tileURI)
+    {
+        const std::string url = tileURI.full();
+        if (url.rfind("file://", 0) != 0)
+            return std::nullopt;
+
+        const std::filesystem::path nativePath = localPathForFileUrl(url);
+        if (nativePath.empty())
+            return std::nullopt;
+
+        uint64_t z = 0;
+        uint64_t x = 0;
+        uint64_t y = 0;
+        if (!LocalTerrainUri::tryParseTerrainTileCoords(nativePath, z, x, y))
+            return std::nullopt;
+
+        const auto location = LocalTerrainUri::parseTerrainTileFileUrl(url);
+        std::optional<std::vector<std::byte>> bytes;
+        if (location)
+            bytes = LocalTerrainFileStore::readTerrainTile(*location, z, x, y);
+        if (!bytes || bytes->empty())
+            bytes = LocalTerrainFileStore::readTerrainTileFromRequestUrl(url);
+        if (!bytes || bytes->empty())
+            return std::nullopt;
+
+        std::string out;
+        out.resize(bytes->size());
+        for (std::size_t i = 0; i < bytes->size(); ++i)
+            out[i] = static_cast<char>((*bytes)[i]);
+        return out;
+    }
+
+    static std::optional<std::string> prepareTerrainTilePayload(const std::string& raw)
+    {
+        if (raw.empty())
+            return std::nullopt;
+        // HTTP/Docker: curl usually delivers decompressed bytes (no gzip magic).
+        // Skip vector copy + gunzip for the common Docker path.
+        if (raw.size() < 2
+            || static_cast<unsigned char>(raw[0]) != 0x1f
+            || static_cast<unsigned char>(raw[1]) != 0x8b)
+        {
+            return raw;
+        }
+        return LocalTerrainFileStore::gunzipTerrainBytes(raw);
+    }
+
     bool readCesiumTerrainMetadata(
         const URI& assetBase,
         const osgDB::Options* readOptions,
@@ -776,12 +832,19 @@ namespace
                     << " url=" << tileURI.full();
                 if (!result.errorDetail().empty())
                     log << " detail=" << result.errorDetail();
-                OE_NOTICE << log.str() << std::endl;
+                OE_DEBUG << log.str() << std::endl;
             }
+
+            std::optional<std::string> payload;
             if (result.succeeded())
+                payload = prepareTerrainTilePayload(result.getString());
+            else if (tileURI.full().rfind("file://", 0) == 0)
+                payload = readLocalTerrainTileBytes(tileURI);
+
+            if (payload && !payload->empty())
             {
                 if (out_code) *out_code = ReadResult::RESULT_OK;
-                std::stringstream buf(result.getString());
+                std::stringstream buf(*payload);
                 return quantizedMeshToTileMesh(key, buf);
             }
 
@@ -892,11 +955,6 @@ namespace
 void CesiumIonTerrainMeshLayer::setLogTerrainHttpResponses(bool value)
 {
     s_logTerrainHttpResponses.store(value, std::memory_order_relaxed);
-}
-
-bool CesiumIonTerrainMeshLayer::getLogTerrainHttpResponses()
-{
-    return s_logTerrainHttpResponses.load(std::memory_order_relaxed);
 }
 
 bool CesiumIonTerrainMeshLayer::isTerrainTileAvailable(const TileKey& key) const

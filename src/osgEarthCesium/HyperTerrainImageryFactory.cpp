@@ -6,6 +6,7 @@
 // maximum+2 초과면 해당 타일만 투명, 그 안에서는 sticky 로 maximum 근처 LOD 를 맞춘다.
 
 #include "HyperTerrainImageryFactory"
+#include "Settings"
 
 #include <CesiumRasterOverlays/UrlTemplateRasterOverlay.h>
 #include <CesiumRasterOverlays/TileMapServiceRasterOverlay.h>
@@ -14,17 +15,121 @@
 #include <CesiumRasterOverlays/RasterOverlay.h>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <mutex>
+#include <string_view>
+#include <vector>
 
 namespace {
 
-static std::atomic<bool> s_diagLoggingEnabled{false};
-static std::atomic<float> s_tmsImageryExposure{
-    osgEarth::Cesium::HyperTerrainImageryFactory::kDefaultTmsImageryExposure};
 static std::mutex s_loggerMutex;
 static std::shared_ptr<spdlog::logger> s_tilesetLogger;
+
+bool containsIgnoreCase(std::string_view haystack, std::string_view needle)
+{
+    if (needle.empty())
+        return true;
+    auto it = std::search(
+        haystack.begin(),
+        haystack.end(),
+        needle.begin(),
+        needle.end(),
+        [](char a, char b) {
+            return std::tolower(static_cast<unsigned char>(a))
+                == std::tolower(static_cast<unsigned char>(b));
+        });
+    return it != haystack.end();
+}
+
+bool isImageryTilesetLogMessage(std::string_view text)
+{
+    if (text.empty())
+        return false;
+
+    if (containsIgnoreCase(text, "image for tile")
+        || containsIgnoreCase(text, "failed to load image")
+        || containsIgnoreCase(text, "loading image")
+        || containsIgnoreCase(text, "raster overlay")
+        || containsIgnoreCase(text, " for image "))
+    {
+        return true;
+    }
+
+    if (containsIgnoreCase(text, "response code")
+        && (containsIgnoreCase(text, ".png")
+            || containsIgnoreCase(text, ".jpg")
+            || containsIgnoreCase(text, ".jpeg")
+            || containsIgnoreCase(text, ".webp")))
+    {
+        return true;
+    }
+
+    return false;
+}
+
+bool isTerrainTilesetLogMessage(std::string_view text)
+{
+    if (text.empty())
+        return false;
+
+    return containsIgnoreCase(text, "quantized mesh")
+        || containsIgnoreCase(text, "layer.json")
+        || containsIgnoreCase(text, ".terrain")
+        || containsIgnoreCase(text, "terrain tile")
+        || containsIgnoreCase(text, "upsampled");
+}
+
+bool shouldEmitCesiumTilesetLog(std::string_view text)
+{
+    const bool imagery = isImageryTilesetLogMessage(text);
+    const bool terrain = isTerrainTilesetLogMessage(text);
+
+    if (imagery)
+        return osgEarth::Cesium::getLogTmsRequest();
+    if (terrain)
+        return osgEarth::Cesium::getLogTerrainRequest();
+
+    // Unknown cesium_tileset messages must not leak through the other flag.
+    return false;
+}
+
+class CategoryGatedLogger final : public spdlog::logger {
+public:
+    template <typename SinkIt>
+    CategoryGatedLogger(std::string name, SinkIt begin, SinkIt end)
+        : spdlog::logger(std::move(name), begin, end)
+    {
+    }
+
+protected:
+    void sink_it_(const spdlog::details::log_msg& msg) override
+    {
+        const std::string_view text(msg.payload.data(), msg.payload.size());
+        if (!shouldEmitCesiumTilesetLog(text))
+            return;
+        spdlog::logger::sink_it_(msg);
+    }
+};
+
+std::shared_ptr<spdlog::logger> createTilesetLoggerLocked()
+{
+    auto sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    std::vector<spdlog::sink_ptr> sinks{sink};
+
+    auto logger = std::make_shared<CategoryGatedLogger>(
+        "cesium_tileset",
+        sinks.begin(),
+        sinks.end());
+
+    if (const auto& defaultLogger = spdlog::default_logger())
+        logger->set_level(defaultLogger->level());
+
+    return logger;
+}
 
 CesiumRasterOverlays::RasterOverlayOptions currentRasterOverlayOpts()
 {
@@ -32,6 +137,9 @@ CesiumRasterOverlays::RasterOverlayOptions currentRasterOverlayOpts()
 }
 
 } // namespace
+
+static std::atomic<float> s_tmsImageryExposure{
+    osgEarth::Cesium::HyperTerrainImageryFactory::kDefaultTmsImageryExposure};
 
 namespace osgEarth { namespace Cesium {
 
@@ -52,23 +160,23 @@ float HyperTerrainImageryFactory::tmsImageryExposure()
     return s_tmsImageryExposure.load(std::memory_order_relaxed);
 }
 
-void HyperTerrainImageryFactory::setImageryTileTransportDiagLogging(bool enabled)
+void HyperTerrainImageryFactory::setImageryTileTransportDiagLogging(bool /*enabled*/)
 {
-    s_diagLoggingEnabled.store(enabled, std::memory_order_relaxed);
+    refreshTilesetLoggerLevel();
+}
+
+void HyperTerrainImageryFactory::refreshTilesetLoggerLevel()
+{
     std::lock_guard<std::mutex> lk(s_loggerMutex);
-    if (s_tilesetLogger) {
-        s_tilesetLogger->set_level(enabled ? spdlog::level::trace : spdlog::level::critical);
-    }
+    if (s_tilesetLogger)
+        s_tilesetLogger->set_level(spdlog::default_logger()->level());
 }
 
 std::shared_ptr<spdlog::logger> HyperTerrainImageryFactory::getOrCreateTilesetLogger()
 {
     std::lock_guard<std::mutex> lk(s_loggerMutex);
-    if (!s_tilesetLogger) {
-        s_tilesetLogger = spdlog::default_logger()->clone("cesium_tileset");
-        const bool enabled = s_diagLoggingEnabled.load(std::memory_order_relaxed);
-        s_tilesetLogger->set_level(enabled ? spdlog::level::trace : spdlog::level::critical);
-    }
+    if (!s_tilesetLogger)
+        s_tilesetLogger = createTilesetLoggerLocked();
     return s_tilesetLogger;
 }
 
