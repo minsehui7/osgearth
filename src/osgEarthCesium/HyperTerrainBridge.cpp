@@ -144,6 +144,7 @@ struct HyperTerrainBridge::Impl {
     std::unique_ptr<Cesium3DTilesSelection::Tileset> primaryTileset;
     std::unique_ptr<Cesium3DTilesSelection::Tileset> fallbackTileset;
     Context* context{nullptr};
+    int32_t cesiumIonTerrainAlwaysOnLevelMax{-1};
 };
 
 HyperTerrainBridge::HyperTerrainBridge(osg::Group* tileGroup)
@@ -183,16 +184,22 @@ bool HyperTerrainBridge::initialize(const HyperTerrainInitOptions& options)
 
     _impl->primaryTileset.reset();
     _impl->fallbackTileset.reset();
+    _impl->cesiumIonTerrainAlwaysOnLevelMax = options.cesiumIonTerrainAlwaysOnLevelMax;
 
     const bool dualTerrain = !options.terrainEndpoint.empty()
         && !options.ionAccessToken.empty()
         && !options.fallbackIonAssetIdStr.empty();
 
+    Cesium3DTilesSelection::TilesetOptions primaryOptions = tilesetOptions;
+    if (dualTerrain && options.cesiumIonTerrainAlwaysOnLevelMax >= 0) {
+        primaryOptions.minimumRenderableLevel = options.cesiumIonTerrainAlwaysOnLevelMax + 1;
+    }
+
     try {
         if (dualTerrain) {
             const int64_t fallbackId = std::stoll(options.fallbackIonAssetIdStr);
             _impl->primaryTileset = std::make_unique<Cesium3DTilesSelection::Tileset>(
-                externals, options.terrainEndpoint, tilesetOptions);
+                externals, options.terrainEndpoint, primaryOptions);
             _impl->fallbackTileset = std::make_unique<Cesium3DTilesSelection::Tileset>(
                 externals, fallbackId, options.ionAccessToken, tilesetOptions);
         } else if (options.ionAssetId > 0 && !options.ionAccessToken.empty()) {
@@ -228,19 +235,41 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
     const auto viewState = buildViewState(viewParams);
     const std::vector<Cesium3DTilesSelection::ViewState> viewStates{viewState};
 
-    const auto primaryResult = _impl->primaryTileset->updateView(viewStates);
+    const bool dualTerrain = _impl->fallbackTileset != nullptr;
+    const int32_t ionAlwaysOnMax = _impl->cesiumIonTerrainAlwaysOnLevelMax;
+    const bool ionLevelGate = dualTerrain && ionAlwaysOnMax >= 0;
 
+    Cesium3DTilesSelection::ViewUpdateResult primaryResult;
     std::optional<Cesium3DTilesSelection::ViewUpdateResult> fallbackResult;
-    if (_impl->fallbackTileset) {
+
+    if (ionLevelGate) {
         fallbackResult = _impl->fallbackTileset->updateView(viewStates);
+
+        bool skipPrimaryUpdate = true;
+        for (const auto& tilePtr : fallbackResult->tilesToRenderThisFrame) {
+            if (!tilePtr)
+                continue;
+            const uint32_t fbLevel = quadtreeLevelFromTile(*tilePtr).value_or(0u);
+            if (fbLevel > static_cast<uint32_t>(ionAlwaysOnMax)) {
+                skipPrimaryUpdate = false;
+                break;
+            }
+        }
+
+        if (!skipPrimaryUpdate) {
+            primaryResult = _impl->primaryTileset->updateView(viewStates);
+        }
+    } else {
+        primaryResult = _impl->primaryTileset->updateView(viewStates);
+        if (_impl->fallbackTileset) {
+            fallbackResult = _impl->fallbackTileset->updateView(viewStates);
+        }
     }
 
     const unsigned numChildren = _impl->tileGroup->getNumChildren();
     for (unsigned i = 0; i < numChildren; ++i) {
         _impl->tileGroup->getChild(i)->setNodeMask(0x0);
     }
-
-    const bool dualTerrain = _impl->fallbackTileset != nullptr;
 
     std::vector<PrimaryCoverageTile> primaryCoverage;
     appendPrimaryCoverageFromTiles(
@@ -275,6 +304,11 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
     for (const auto& tilePtr : primaryResult.tilesToRenderThisFrame) {
         if (dualTerrain && tilePtr && isUpsampledPrimaryTile(*tilePtr))
             continue;
+        if (ionLevelGate && tilePtr) {
+            const uint32_t level = quadtreeLevelFromTile(*tilePtr).value_or(0u);
+            if (level <= static_cast<uint32_t>(ionAlwaysOnMax))
+                continue;
+        }
         tryShowTile(tilePtr);
     }
 
@@ -286,6 +320,10 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
                 tilePtr->getTransform(), tilePtr->getBoundingVolume());
             const auto fbGlobe = Cesium3DTilesSelection::estimateGlobeRectangle(bv, CesiumEllipsoid::WGS84);
             const uint32_t fbLevel = quadtreeLevelFromTile(*tilePtr).value_or(0u);
+            if (ionLevelGate && fbLevel <= static_cast<uint32_t>(ionAlwaysOnMax)) {
+                tryShowTile(tilePtr);
+                continue;
+            }
             if (primaryCoversFallbackTile(fbGlobe, fbLevel, primaryCoverage))
                 continue;
             tryShowTile(tilePtr);

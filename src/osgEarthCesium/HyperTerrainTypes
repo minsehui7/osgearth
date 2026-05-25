@@ -53,6 +53,8 @@ struct OSGEARTHCESIUM_EXPORT HyperTerrainInitOptions {
     std::string fallbackIonAssetIdStr;
     bool logTmsRequest{false};
     double maximumScreenSpaceError{16.0};
+    /** Dual terrain: levels 0..N use Ion fallback only; primary skips load/render. -1 = off. */
+    int32_t cesiumIonTerrainAlwaysOnLevelMax{-1};
 };
 
 } // namespace Cesium
