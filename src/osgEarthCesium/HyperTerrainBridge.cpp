@@ -9,6 +9,7 @@
 #include "Context"
 #include "Settings"
 
+#include <Cesium3DTilesSelection/ITileExcluder.h>
 #include <Cesium3DTilesSelection/BoundingVolume.h>
 #include <Cesium3DTilesSelection/Tile.h>
 #include <Cesium3DTilesSelection/Tileset.h>
@@ -87,6 +88,23 @@ void appendPrimaryCoverageFromTiles(
     }
 }
 
+bool globeRectangleFullyContains(
+    const GlobeRectangle& outer,
+    const GlobeRectangle& inner)
+{
+    if (inner.isEmpty() || outer.isEmpty())
+        return false;
+
+    const auto containsCorner = [&](double longitude, double latitude) {
+        return outer.contains(Cartographic(longitude, latitude, 0.0));
+    };
+
+    return containsCorner(inner.getWest(), inner.getSouth()) &&
+           containsCorner(inner.getEast(), inner.getSouth()) &&
+           containsCorner(inner.getWest(), inner.getNorth()) &&
+           containsCorner(inner.getEast(), inner.getNorth());
+}
+
 bool primaryCoversFallbackTile(
     const std::optional<GlobeRectangle>& fallbackGlobe,
     uint32_t fallbackLevel,
@@ -95,18 +113,52 @@ bool primaryCoversFallbackTile(
     if (!fallbackGlobe || fallbackGlobe->isEmpty())
         return false;
 
-    const Cartographic fbCenter = fallbackGlobe->computeCenter();
-
     for (const PrimaryCoverageTile& primary : primaryTiles) {
         if (primary.level < fallbackLevel)
             continue;
-        // Hide Ion only when a local tile at equal/finer LOD actually covers
-        // this geographic cell — not when a sibling tile merely shares an edge.
-        if (primary.rect.contains(fbCenter))
+        if (globeRectangleFullyContains(primary.rect, *fallbackGlobe))
             return true;
     }
     return false;
 }
+
+class PrimaryCoverageFallbackExcluder
+    : public Cesium3DTilesSelection::ITileExcluder {
+public:
+    void setCoverage(
+        std::vector<PrimaryCoverageTile> coverage,
+        int32_t ionAlwaysOnLevelMax)
+    {
+        _coverage = std::move(coverage);
+        _ionAlwaysOnLevelMax = ionAlwaysOnLevelMax;
+    }
+
+    void clearCoverage()
+    {
+        _coverage.clear();
+        _ionAlwaysOnLevelMax = -1;
+    }
+
+    bool shouldExclude(const Tile& tile) const noexcept override
+    {
+        if (_ionAlwaysOnLevelMax < 0 || _coverage.empty())
+            return false;
+
+        const std::optional<uint32_t> level = quadtreeLevelFromTile(tile);
+        if (!level || *level <= static_cast<uint32_t>(_ionAlwaysOnLevelMax))
+            return false;
+
+        const auto bv = Cesium3DTilesSelection::transformBoundingVolume(
+            tile.getTransform(), tile.getBoundingVolume());
+        const auto fbGlobe =
+            Cesium3DTilesSelection::estimateGlobeRectangle(bv, CesiumEllipsoid::WGS84);
+        return primaryCoversFallbackTile(fbGlobe, *level, _coverage);
+    }
+
+private:
+    std::vector<PrimaryCoverageTile> _coverage;
+    int32_t _ionAlwaysOnLevelMax{-1};
+};
 
 void destroyTilesetQuietly(std::unique_ptr<Cesium3DTilesSelection::Tileset>& tileset)
 {
@@ -143,6 +195,7 @@ struct HyperTerrainBridge::Impl {
     std::shared_ptr<HyperTerrainPrepareRendererResources> renderer;
     std::unique_ptr<Cesium3DTilesSelection::Tileset> primaryTileset;
     std::unique_ptr<Cesium3DTilesSelection::Tileset> fallbackTileset;
+    std::shared_ptr<PrimaryCoverageFallbackExcluder> fallbackExcluder;
     Context* context{nullptr};
     int32_t cesiumIonTerrainAlwaysOnLevelMax{-1};
 };
@@ -200,8 +253,15 @@ bool HyperTerrainBridge::initialize(const HyperTerrainInitOptions& options)
             const int64_t fallbackId = std::stoll(options.fallbackIonAssetIdStr);
             _impl->primaryTileset = std::make_unique<Cesium3DTilesSelection::Tileset>(
                 externals, options.terrainEndpoint, primaryOptions);
+
+            Cesium3DTilesSelection::TilesetOptions fallbackOptions = tilesetOptions;
+            if (options.cesiumIonTerrainAlwaysOnLevelMax >= 0) {
+                _impl->fallbackExcluder =
+                    std::make_shared<PrimaryCoverageFallbackExcluder>();
+                fallbackOptions.excluders.push_back(_impl->fallbackExcluder);
+            }
             _impl->fallbackTileset = std::make_unique<Cesium3DTilesSelection::Tileset>(
-                externals, fallbackId, options.ionAccessToken, tilesetOptions);
+                externals, fallbackId, options.ionAccessToken, fallbackOptions);
         } else if (options.ionAssetId > 0 && !options.ionAccessToken.empty()) {
             _impl->primaryTileset = std::make_unique<Cesium3DTilesSelection::Tileset>(
                 externals, options.ionAssetId, options.ionAccessToken, tilesetOptions);
@@ -243,10 +303,14 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
     std::optional<Cesium3DTilesSelection::ViewUpdateResult> fallbackResult;
 
     if (ionLevelGate) {
-        fallbackResult = _impl->fallbackTileset->updateView(viewStates);
+        if (_impl->fallbackExcluder)
+            _impl->fallbackExcluder->clearCoverage();
+
+        const auto coarseFallbackResult =
+            _impl->fallbackTileset->updateView(viewStates);
 
         bool skipPrimaryUpdate = true;
-        for (const auto& tilePtr : fallbackResult->tilesToRenderThisFrame) {
+        for (const auto& tilePtr : coarseFallbackResult.tilesToRenderThisFrame) {
             if (!tilePtr)
                 continue;
             const uint32_t fbLevel = quadtreeLevelFromTile(*tilePtr).value_or(0u);
@@ -256,8 +320,25 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
             }
         }
 
-        if (!skipPrimaryUpdate) {
+        if (skipPrimaryUpdate) {
+            fallbackResult = std::move(coarseFallbackResult);
+        } else {
             primaryResult = _impl->primaryTileset->updateView(viewStates);
+
+            std::vector<PrimaryCoverageTile> primaryCoverageForExcluder;
+            appendPrimaryCoverageFromTiles(
+                primaryResult.tilesToRenderThisFrame,
+                CesiumEllipsoid::WGS84,
+                dualTerrain,
+                primaryCoverageForExcluder);
+
+            if (_impl->fallbackExcluder) {
+                _impl->fallbackExcluder->setCoverage(
+                    std::move(primaryCoverageForExcluder),
+                    ionAlwaysOnMax);
+            }
+
+            fallbackResult = _impl->fallbackTileset->updateView(viewStates);
         }
     } else {
         primaryResult = _impl->primaryTileset->updateView(viewStates);
