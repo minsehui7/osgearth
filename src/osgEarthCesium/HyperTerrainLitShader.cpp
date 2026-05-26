@@ -84,6 +84,7 @@ out vec3 atmos_up;
 out float atmos_space;
 out float v_hazeFactor;
 out vec4 v_oeOverlayTexcoord;
+out vec3 v_worldPos;
 
 uniform mat4 oe_overlay_texmatrix;
 
@@ -185,12 +186,13 @@ void main() {
 
     vp_VertexView = vertexVIEW.xyz / max(vertexVIEW.w, 1e-6);
 
+    vec4 worldPos4 = osg_ViewMatrixInverse * vertexVIEW;
+    v_worldPos = worldPos4.xyz / max(worldPos4.w, 1e-6);
+
     // 거리 헤이즈 인자: ECEF world-space 좌표 기준으로 hl_fog_center 까지의 거리.
     // hl_fog_end <= 0 이면 비활성 (ViewOsgEarth.cpp::installDistanceFog 초기값).
     if (hl_fog_end > 0.0) {
-        vec4 worldPos4 = osg_ViewMatrixInverse * vertexVIEW;
-        vec3 worldPos  = worldPos4.xyz / max(worldPos4.w, 1e-6);
-        float dist = length(worldPos - hl_fog_center);
+        float dist = length(v_worldPos - hl_fog_center);
         float range = max(hl_fog_end - hl_fog_start, 1.0);
         v_hazeFactor = clamp((dist - hl_fog_start) / range, 0.0, 1.0);
     } else {
@@ -249,6 +251,14 @@ uniform float oe_sky_ambientBoostFactor;
 uniform float hl_fog_visual_scale;
 uniform vec3  hl_fog_haze_color;
 
+uniform int   hl_clip_enabled;
+uniform int   hl_clip_union;
+uniform int   hl_clip_plane_count;
+uniform mat4  hl_clip_modelMatrixInverse;
+uniform vec4  hl_clip_planes[64];
+
+in vec3 v_worldPos;
+
 struct osg_LightSourceParameters {
    vec4 ambient;
    vec4 diffuse;
@@ -291,6 +301,27 @@ out vec4 fragColor;
 
 const vec3 kBaseColor = vec3(0.60, 0.50, 0.40);
 
+// Cesium ClippingPlaneCollection (intersection): keep where dot(n,p)+d <= 0 for all planes.
+bool hyperTerrainClipDiscard(vec3 worldPos) {
+    if (hl_clip_enabled == 0 || hl_clip_plane_count <= 0)
+        return false;
+    vec3 localPos = (hl_clip_modelMatrixInverse * vec4(worldPos, 1.0)).xyz;
+    if (hl_clip_union != 0) {
+        for (int i = 0; i < hl_clip_plane_count; ++i) {
+            vec4 pl = hl_clip_planes[i];
+            if (dot(pl.xyz, localPos) + pl.w <= 0.0)
+                return true;
+        }
+        return false;
+    }
+    for (int i = 0; i < hl_clip_plane_count; ++i) {
+        vec4 pl = hl_clip_planes[i];
+        if (dot(pl.xyz, localPos) + pl.w > 0.0)
+            return true;
+    }
+    return false;
+}
+
 // 거리 헤이즈 적용 — 원본 wip/osgearth-integration::hl_fog_frag 와 동일한 톤매핑.
 // rgb 가 display-space (post tone-map) 일 때 호출.
 vec3 applyDistanceHaze(vec3 rgb) {
@@ -329,6 +360,9 @@ vec3 applyTmsImageryExposure(vec3 rgb) {
 }
 
 void main() {
+    if (hyperTerrainClipDiscard(v_worldPos))
+        discard;
+
     vec3 colorRgb = kBaseColor;
     // sampler2D 배열을 비상수 인덱스로 texture() 하면 일부 드라이버에서 비정상 샘플링된다.
     // 슬롯마다 상수 인덱스로 펼친다 (OWM 구름 등 RGBA 알파 유지).

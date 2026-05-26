@@ -1,0 +1,71 @@
+/* osgEarth Cesium - terrain half-space clipping (CesiumJS globe.clippingPlanes) */
+#ifndef OSGEARTH_CESIUM_HYPERTERRAIN_CLIPPING_H
+#define OSGEARTH_CESIUM_HYPERTERRAIN_CLIPPING_H
+
+#include "Export"
+
+#include <osg/Matrixd>
+#include <osg/StateSet>
+#include <osg/Vec3f>
+#include <osg/Vec4f>
+
+#include <cstdint>
+#include <vector>
+
+namespace osgEarth {
+namespace Cesium {
+
+/** Maximum edge planes in hl_clip_planes[] (arbitrary polygon rings). */
+constexpr int kHyperTerrainMaxClippingPlanes = 64;
+
+/** Hessian plane in clipping model space (Cesium ClippingPlane). */
+struct OSGEARTHCESIUM_EXPORT HyperTerrainClippingPlane {
+    osg::Vec3f normal{1.f, 0.f, 0.f};
+    float distance{0.f};
+};
+
+/**
+ * Terrain clipping state (Cesium ClippingPlaneCollection + optional modelMatrix).
+ * Default unionClippingRegions=false: keep fragments inside all half-spaces
+ * (discard when dot(normal, p) + distance > 0 for any plane).
+ * Polygon rings use ECEF planes (modelMatrix identity), per St. Helens sample.
+ */
+struct OSGEARTHCESIUM_EXPORT HyperTerrainClippingState {
+    bool enabled{false};
+    bool unionClippingRegions{false};
+    osg::Matrixd modelMatrix;
+    std::vector<HyperTerrainClippingPlane> planes;
+};
+
+/** WGS84 ring vertex: x=longitude deg, y=latitude deg, z=height m (absolute). */
+using HyperTerrainClippingLonLatHeight = osg::Vec3d;
+
+/** Create default-disabled clipping uniforms on a StateSet (terrain engine / MapNode). */
+OSGEARTHCESIUM_EXPORT void initHyperTerrainClippingUniforms(osg::StateSet* ss);
+
+/** Push clipping state to hl_clip_* uniforms. */
+OSGEARTHCESIUM_EXPORT void applyHyperTerrainClippingToStateSet(
+    osg::StateSet* ss,
+    const HyperTerrainClippingState& state);
+
+/**
+ * Build clipping planes from a closed polygon ring in ECEF (Cesium St. Helens).
+ * ringEcef.size() >= 3; order is the boundary winding (same as Cesium sample).
+ */
+OSGEARTHCESIUM_EXPORT HyperTerrainClippingState makePolygonClippingStateFromEcef(
+    const std::vector<osg::Vec3d>& ringEcef);
+
+/** Same as makePolygonClippingStateFromEcef after converting WGS84 lon/lat/height. */
+OSGEARTHCESIUM_EXPORT HyperTerrainClippingState makePolygonClippingStateFromGeo(
+    const std::vector<HyperTerrainClippingLonLatHeight>& ringLonLatHeight);
+
+/** ECEF ENU frame at WGS84 lon/lat/height (degrees, meters). */
+OSGEARTHCESIUM_EXPORT osg::Matrixd makeEcefEnuModelMatrix(
+    double lonDeg,
+    double latDeg,
+    double heightM);
+
+} // namespace Cesium
+} // namespace osgEarth
+
+#endif
