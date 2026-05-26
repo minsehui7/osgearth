@@ -26,6 +26,7 @@ if (CESIUM_NATIVE_FOUND)
         Settings.cpp
         TaskProcessor.cpp
         HyperTerrainBridge.cpp
+        HyperTerrainLitShader.cpp
         HyperTerrainPrepareRendererResources.cpp
         HyperTerrainRasterRenderer.cpp
         HyperTerrainImageryFactory.cpp)
@@ -43,7 +44,8 @@ if (CESIUM_NATIVE_FOUND)
         TaskProcessor
         HyperTerrainTypes
         HyperTerrainBridge
-        HyperTerrainImageryFactory)
+        HyperTerrainImageryFactory
+        HyperTerrainLitShader)
 
     set(CMAKE_CXX_STANDARD 20)
 

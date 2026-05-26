@@ -1,0 +1,23 @@
+/* osgEarth Cesium - shared Ion/HyperTerrain lit mesh shaders */
+#ifndef OSGEARTH_CESIUM_HYPERTERRAIN_LIT_SHADER_H
+#define OSGEARTH_CESIUM_HYPERTERRAIN_LIT_SHADER_H
+
+#include "Export"
+#include <osg/Program>
+#include <osg/StateSet>
+
+namespace osgEarth { namespace Cesium {
+
+enum class HyperTerrainLitColorMode {
+    FixedTerrainBase,
+    PerVertexAlbedo
+};
+
+OSGEARTHCESIUM_EXPORT osg::ref_ptr<osg::Program> createHyperTerrainLitProgram(
+    HyperTerrainLitColorMode colorMode = HyperTerrainLitColorMode::FixedTerrainBase);
+
+OSGEARTHCESIUM_EXPORT void initHyperTerrainLitStateSet(osg::StateSet* ss);
+
+}} // namespace osgEarth::Cesium
+
+#endif
