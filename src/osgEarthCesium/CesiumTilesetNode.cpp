@@ -14,12 +14,10 @@
 #include <osgUtil/CullVisitor>
 #include <Cesium3DTilesSelection/BoundingVolume.h>
 #include <Cesium3DTilesSelection/Tileset.h>
+#include <CesiumGeometry/QuadtreeTileID.h>
 
 #include <algorithm>
 #include <cmath>
-#include <filesystem>
-#include <fstream>
-#include <mutex>
 #include <sstream>
 #include <string>
 
@@ -33,16 +31,9 @@ namespace
 {
     inline void writeClampDiagnostic(const std::string& message)
     {
-        static std::mutex s_fileMutex;
-        std::lock_guard<std::mutex> lock(s_fileMutex);
-        try
-        {
-            std::filesystem::create_directories("logs");
-            std::ofstream out("logs/cesium-clamp-diagnostics.log", std::ios::app);
-            out << message << std::endl;
-        }
-        catch (...)
-        {
+        // Do not open files from CULL traverse (Debug CRT abort on failed ofstream).
+        if (osg::getNotifyLevel() >= osg::DEBUG_INFO) {
+            osg::notify(osg::DEBUG_INFO) << LC << message << std::endl;
         }
     }
 
@@ -247,7 +238,9 @@ void CesiumTilesetNode::applyMainThreadRebuildBudget(Cesium3DTilesSelection::Til
     _rebuildBudgetCredit += rate;
     const int budget = static_cast<int>(std::floor(_rebuildBudgetCredit));
     _rebuildBudgetCredit -= static_cast<double>(budget);
-    options.maximumMainThreadTilesPerLoadPass = static_cast<uint32_t>(std::max(0, budget));
+    // Fractional rate often yields 0; ensure at least a few tiles finish per pass.
+    options.maximumMainThreadTilesPerLoadPass =
+        static_cast<uint32_t>(std::max(4, budget));
 }
 
 // ---- Traversal ---------------------------------------------------------------
@@ -311,23 +304,83 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         osg::Group* parent = tileParent();
         std::vector<osg::ref_ptr<osg::Node>> displayNodes;
 
-        for (auto tile : updates.tilesToRenderThisFrame)
-        {
-            if (tile->getContent().isRenderContent())
+        const size_t selectedCount = updates.tilesToRenderThisFrame.size();
+
+        auto collectDisplayNodes = [&](size_t* renderContentCountOut, size_t* withResourcesCountOut) {
+            size_t renderContentCount = 0;
+            size_t withResourcesCount = 0;
+            size_t renderReadyCount = 0;
+            displayNodes.clear();
+            for (auto tile : updates.tilesToRenderThisFrame)
             {
-                MainThreadResult* result = reinterpret_cast<MainThreadResult*>(tile->getContent().getRenderContent()->getRenderResources());
+                if (!tile->getContent().isRenderContent())
+                    continue;
+                ++renderContentCount;
+                MainThreadResult* result = reinterpret_cast<MainThreadResult*>(
+                    tile->getContent().getRenderContent()->getRenderResources());
+                if (result)
+                    ++withResourcesCount;
                 if (result && result->node.valid())
                 {
+                    ++renderReadyCount;
                     displayNodes.push_back(result->node.get());
+                }
+            }
+            if (renderContentCountOut)
+                *renderContentCountOut = renderContentCount;
+            if (withResourcesCountOut)
+                *withResourcesCountOut = withResourcesCount;
+            return renderReadyCount;
+        };
+
+        size_t renderContentCount = 0;
+        size_t withResourcesCount = 0;
+        size_t renderReadyCount = collectDisplayNodes(&renderContentCount, &withResourcesCount);
+
+        // Implicit Hyper3DTiles: level-0 root with missing/wrong 0/0/0.glb can stall at sel=1, rc=0.
+        if (selectedCount == 1 && renderContentCount == 0) {
+            static int stuckImplicitRootFrames = 0;
+            const Cesium3DTilesSelection::Tile* onlyTile =
+                updates.tilesToRenderThisFrame.front();
+            const auto& tileId = onlyTile->getTileID();
+            if (const auto* quadId =
+                    std::get_if<CesiumGeometry::QuadtreeTileID>(&tileId)) {
+                if (quadId->level == 0) {
+                    if (++stuckImplicitRootFrames >= 6) {
+                        Cesium3DTilesSelection::TilesetOptions& opts =
+                            tileset->getOptions();
+                        const float prev = opts.maximumScreenSpaceError;
+                        opts.maximumScreenSpaceError =
+                            std::max(1.0f, prev * 0.5f);
+                        stuckImplicitRootFrames = 0;
+                    }
+                } else {
+                    stuckImplicitRootFrames = 0;
                 }
             }
         }
 
-        parent->removeChildren(0, parent->getNumChildren());
-        for (const auto& node : displayNodes)
+        // Drain main-thread glTF→OSG queue when tiles are selected but not yet drawable.
+        for (int pass = 0; pass < 12 && selectedCount > 0 && renderReadyCount == 0; ++pass)
         {
-            if (node.valid())
-                parent->addChild(node.get());
+            tileset->getAsyncSystem().dispatchMainThreadTasks();
+            renderReadyCount = collectDisplayNodes(&renderContentCount, &withResourcesCount);
+            if (renderContentCount == 0)
+                break;
+        }
+
+        if (displayNodes.empty() && selectedCount > 0)
+        {
+            // Keep prior frame geometry while async load / main-thread rebuild catches up.
+        }
+        else
+        {
+            parent->removeChildren(0, parent->getNumChildren());
+            for (const auto& node : displayNodes)
+            {
+                if (node.valid())
+                    parent->addChild(node.get());
+            }
         }
     }
     osg::Group::traverse(nv);
