@@ -18,6 +18,8 @@ static std::atomic<bool> s_logTerrainRequest{false};
 static std::atomic<bool> s_logTmsRequest{false};
 static std::atomic<bool> s_cesiumShuttingDown{false};
 static osgEarth::Cesium::TileRebuildsPerFrameFn s_tileRebuildsPerFrameProvider;
+static std::atomic<bool> s_hyperTerrainLoadingActive{true};
+static std::atomic<double> s_userTilesetRebuildScaleWhileTerrainLoads{0.05};
 
 namespace
 {
@@ -108,4 +110,44 @@ double osgEarth::Cesium::tileRebuildsPerFrameRate()
         return std::max(0.0, s_tileRebuildsPerFrameProvider());
     }
     return 0.25;
+}
+
+void osgEarth::Cesium::setHyperTerrainLoadingActive(bool active)
+{
+    s_hyperTerrainLoadingActive.store(active, std::memory_order_relaxed);
+}
+
+bool osgEarth::Cesium::isHyperTerrainLoadingActive()
+{
+    return s_hyperTerrainLoadingActive.load(std::memory_order_relaxed);
+}
+
+void osgEarth::Cesium::setUserTilesetRebuildScaleWhileTerrainLoads(double scale)
+{
+    s_userTilesetRebuildScaleWhileTerrainLoads.store(
+        std::clamp(scale, 0.0, 1.0), std::memory_order_relaxed);
+}
+
+double osgEarth::Cesium::getUserTilesetRebuildScaleWhileTerrainLoads()
+{
+    return s_userTilesetRebuildScaleWhileTerrainLoads.load(std::memory_order_relaxed);
+}
+
+double osgEarth::Cesium::userTilesetRebuildsPerFrameRate()
+{
+    double rate = tileRebuildsPerFrameRate();
+    if (isHyperTerrainLoadingActive()) {
+        rate *= getUserTilesetRebuildScaleWhileTerrainLoads();
+    }
+    return rate;
+}
+
+uint32_t osgEarth::Cesium::userTilesetMinMainThreadTilesPerPass()
+{
+    return isHyperTerrainLoadingActive() ? 0u : 4u;
+}
+
+int osgEarth::Cesium::userTilesetMaxDrainPassesWhileTerrainLoads()
+{
+    return isHyperTerrainLoadingActive() ? 2 : 12;
 }

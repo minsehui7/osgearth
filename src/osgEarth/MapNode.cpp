@@ -913,9 +913,16 @@ MapNode::traverse( osg::NodeVisitor& nv )
             }
         }
 
-        // traverse:
+        // Cull map layers before terrain so DrapeableNode entries (e.g. clamped 3D Tiles)
+        // are registered in DrapingCullSet before DrapingTechnique builds overlay RTT.
         for (auto& child : _children)
-            child->accept(nv);
+        {
+            if (child.get() != _terrainGroup)
+                child->accept(nv);
+        }
+
+        if (_terrainGroup)
+            _terrainGroup->accept(nv);
 
         for(int i=0; i< stateSetsPushed; ++i)
             cv->popStateSet();

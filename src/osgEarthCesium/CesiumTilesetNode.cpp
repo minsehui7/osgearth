@@ -224,7 +224,7 @@ void CesiumTilesetNode::applyMainThreadRebuildBudget(Cesium3DTilesSelection::Til
     }
 
     Cesium3DTilesSelection::TilesetOptions& options = tileset->getOptions();
-    const double rate = tileRebuildsPerFrameRate();
+    const double rate = userTilesetRebuildsPerFrameRate();
     if (rate <= 0.0) {
         options.mainThreadLoadingTimeLimit = 0.0;
         options.maximumMainThreadTilesPerLoadPass = 0;
@@ -238,9 +238,9 @@ void CesiumTilesetNode::applyMainThreadRebuildBudget(Cesium3DTilesSelection::Til
     _rebuildBudgetCredit += rate;
     const int budget = static_cast<int>(std::floor(_rebuildBudgetCredit));
     _rebuildBudgetCredit -= static_cast<double>(budget);
-    // Fractional rate often yields 0; ensure at least a few tiles finish per pass.
+    const uint32_t minTiles = userTilesetMinMainThreadTilesPerPass();
     options.maximumMainThreadTilesPerLoadPass =
-        static_cast<uint32_t>(std::max(4, budget));
+        static_cast<uint32_t>(std::max(static_cast<int>(minTiles), budget));
 }
 
 // ---- Traversal ---------------------------------------------------------------
@@ -288,6 +288,12 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         {
             osg::Group* parent = tileParent();
             parent->removeChildren(0, parent->getNumChildren());
+            osg::Group::traverse(nv);
+            return;
+        }
+
+        // HyperTerrain streaming: skip updateView/dispatch/drape tile churn (budget alone is not enough).
+        if (isHyperTerrainLoadingActive()) {
             osg::Group::traverse(nv);
             return;
         }
@@ -361,7 +367,8 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         }
 
         // Drain main-thread glTF→OSG queue when tiles are selected but not yet drawable.
-        for (int pass = 0; pass < 12 && selectedCount > 0 && renderReadyCount == 0; ++pass)
+        const int maxDrainPasses = userTilesetMaxDrainPassesWhileTerrainLoads();
+        for (int pass = 0; pass < maxDrainPasses && selectedCount > 0 && renderReadyCount == 0; ++pass)
         {
             tileset->getAsyncSystem().dispatchMainThreadTasks();
             renderReadyCount = collectDisplayNodes(&renderContentCount, &withResourcesCount);

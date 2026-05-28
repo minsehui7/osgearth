@@ -26,6 +26,8 @@
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <optional>
 #include <vector>
 
@@ -188,6 +190,114 @@ Cesium3DTilesSelection::ViewState buildViewState(const HyperTerrainViewParams& p
         position, direction, up, viewportSize, hFov, vFov);
 }
 
+struct TileSelectionStats {
+    size_t selectedCount = 0;
+    size_t renderContentCount = 0;
+    size_t renderReadyCount = 0;
+};
+
+TileSelectionStats countTerrainTileSelection(
+    const std::vector<Tile::ConstPointer>& tiles,
+    const HyperTerrainPrepareRendererResources* renderer)
+{
+    TileSelectionStats stats;
+    stats.selectedCount = tiles.size();
+    if (!renderer) {
+        return stats;
+    }
+    for (const auto& tilePtr : tiles) {
+        if (!tilePtr || !tilePtr->getContent().isRenderContent()) {
+            continue;
+        }
+        ++stats.renderContentCount;
+        HyperTerrainTileRenderData renderData;
+        if (renderer->tryResolveTileRenderData(*tilePtr, renderData) && renderData.xform.valid()) {
+            ++stats.renderReadyCount;
+        }
+    }
+    return stats;
+}
+
+void applyMainThreadRebuildBudget(
+    Cesium3DTilesSelection::Tileset* tileset,
+    double& rebuildBudgetCredit)
+{
+    if (!tileset) {
+        return;
+    }
+
+    Cesium3DTilesSelection::TilesetOptions& options = tileset->getOptions();
+    const double rate = tileRebuildsPerFrameRate();
+    if (rate <= 0.0) {
+        options.mainThreadLoadingTimeLimit = 0.0;
+        options.maximumMainThreadTilesPerLoadPass = 0;
+        options.enforceMainThreadTilesPerLoadPass = false;
+        return;
+    }
+
+    options.mainThreadLoadingTimeLimit = 86400000.0;
+    options.enforceMainThreadTilesPerLoadPass = true;
+    rebuildBudgetCredit += rate;
+    const int budget = static_cast<int>(std::floor(rebuildBudgetCredit));
+    rebuildBudgetCredit -= static_cast<double>(budget);
+    options.maximumMainThreadTilesPerLoadPass =
+        static_cast<uint32_t>(std::max(4, budget));
+}
+
+void maybeRelaxImplicitRootStuckSse(
+    Cesium3DTilesSelection::Tileset* tileset,
+    const std::vector<Tile::ConstPointer>& tilesToRender,
+    size_t renderContentCount,
+    int& stuckImplicitRootFrames)
+{
+    if (!tileset) {
+        return;
+    }
+
+    const size_t selectedCount = tilesToRender.size();
+    if (selectedCount != 1 || renderContentCount != 0) {
+        return;
+    }
+
+    const Tile::ConstPointer& onlyTile = tilesToRender.front();
+    if (!onlyTile) {
+        return;
+    }
+
+    const TileID& tileId = onlyTile->getTileID();
+    if (const auto* quadId = std::get_if<QuadtreeTileID>(&tileId)) {
+        if (quadId->level == 0) {
+            if (++stuckImplicitRootFrames >= 6) {
+                Cesium3DTilesSelection::TilesetOptions& opts = tileset->getOptions();
+                const float prev = opts.maximumScreenSpaceError;
+                opts.maximumScreenSpaceError = std::max(1.0f, prev * 0.5f);
+                stuckImplicitRootFrames = 0;
+            }
+        } else {
+            stuckImplicitRootFrames = 0;
+        }
+    }
+}
+
+void drainMainThreadUntilDrawable(
+    Cesium3DTilesSelection::Tileset* tileset,
+    const std::vector<Tile::ConstPointer>& tilesToRender,
+    const HyperTerrainPrepareRendererResources* renderer,
+    TileSelectionStats& stats)
+{
+    if (!tileset) {
+        return;
+    }
+
+    for (int pass = 0; pass < 12 && stats.selectedCount > 0 && stats.renderReadyCount == 0; ++pass) {
+        tileset->getAsyncSystem().dispatchMainThreadTasks();
+        stats = countTerrainTileSelection(tilesToRender, renderer);
+        if (stats.renderContentCount == 0) {
+            break;
+        }
+    }
+}
+
 } // namespace
 
 struct HyperTerrainBridge::Impl {
@@ -198,6 +308,13 @@ struct HyperTerrainBridge::Impl {
     std::shared_ptr<PrimaryCoverageFallbackExcluder> fallbackExcluder;
     Context* context{nullptr};
     int32_t cesiumIonTerrainAlwaysOnLevelMax{-1};
+    double primaryRebuildBudgetCredit = 0.0;
+    double fallbackRebuildBudgetCredit = 0.0;
+    int primaryStuckImplicitRootFrames = 0;
+    int fallbackStuckImplicitRootFrames = 0;
+    /// While true, user 3D Tiles layers defer cull/update and drape work for terrain priority.
+    bool deferUserTilesets = true;
+    int terrainStableFrames = 0;
 };
 
 HyperTerrainBridge::HyperTerrainBridge(osg::Group* tileGroup)
@@ -281,14 +398,63 @@ bool HyperTerrainBridge::initialize(const HyperTerrainInitOptions& options)
     return _impl->primaryTileset != nullptr;
 }
 
+namespace {
+
+bool terrainTilesetStillLoading(const TileSelectionStats& stats)
+{
+    return stats.selectedCount > 0 && stats.renderReadyCount < stats.selectedCount;
+}
+
+bool terrainTilesetHasPendingContent(const TileSelectionStats& stats)
+{
+    return stats.renderContentCount > stats.renderReadyCount;
+}
+
+constexpr int kTerrainStableFramesBeforeUserTilesets = 45;
+
+void updateDeferUserTilesetsState(
+    bool activelyLoading,
+    bool& deferUserTilesets,
+    int& terrainStableFrames)
+{
+    if (activelyLoading) {
+        deferUserTilesets = true;
+        terrainStableFrames = 0;
+        return;
+    }
+    if (terrainStableFrames < kTerrainStableFramesBeforeUserTilesets) {
+        ++terrainStableFrames;
+        deferUserTilesets = true;
+        return;
+    }
+    deferUserTilesets = false;
+}
+
+} // namespace
+
 void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, bool tilesetReady)
 {
     if (isShuttingDown())
         return;
-    if (!_impl->primaryTileset)
+    if (!_impl->primaryTileset) {
+        _impl->deferUserTilesets = false;
+        setHyperTerrainLoadingActive(false);
         return;
-    if (!viewParams.hasCameraData || !tilesetReady)
+    }
+    if (!viewParams.hasCameraData || !tilesetReady) {
+        _impl->deferUserTilesets = true;
+        _impl->terrainStableFrames = 0;
+        setHyperTerrainLoadingActive(true);
         return;
+    }
+
+    // Latched from last frame; same-frame CULL (map layers before terrain) reads this.
+    setHyperTerrainLoadingActive(_impl->deferUserTilesets);
+
+    applyMainThreadRebuildBudget(_impl->primaryTileset.get(), _impl->primaryRebuildBudgetCredit);
+    if (_impl->fallbackTileset) {
+        applyMainThreadRebuildBudget(_impl->fallbackTileset.get(), _impl->fallbackRebuildBudgetCredit);
+    }
 
     _impl->context->asyncSystem.dispatchMainThreadTasks();
 
@@ -347,9 +513,56 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
         }
     }
 
-    const unsigned numChildren = _impl->tileGroup->getNumChildren();
-    for (unsigned i = 0; i < numChildren; ++i) {
-        _impl->tileGroup->getChild(i)->setNodeMask(0x0);
+    const HyperTerrainPrepareRendererResources* renderer = _impl->renderer.get();
+
+    TileSelectionStats primaryStats =
+        countTerrainTileSelection(primaryResult.tilesToRenderThisFrame, renderer);
+    maybeRelaxImplicitRootStuckSse(
+        _impl->primaryTileset.get(),
+        primaryResult.tilesToRenderThisFrame,
+        primaryStats.renderContentCount,
+        _impl->primaryStuckImplicitRootFrames);
+    drainMainThreadUntilDrawable(
+        _impl->primaryTileset.get(),
+        primaryResult.tilesToRenderThisFrame,
+        renderer,
+        primaryStats);
+
+    TileSelectionStats fallbackStats;
+    if (fallbackResult.has_value()) {
+        fallbackStats =
+            countTerrainTileSelection(fallbackResult->tilesToRenderThisFrame, renderer);
+        maybeRelaxImplicitRootStuckSse(
+            _impl->fallbackTileset.get(),
+            fallbackResult->tilesToRenderThisFrame,
+            fallbackStats.renderContentCount,
+            _impl->fallbackStuckImplicitRootFrames);
+        drainMainThreadUntilDrawable(
+            _impl->fallbackTileset.get(),
+            fallbackResult->tilesToRenderThisFrame,
+            renderer,
+            fallbackStats);
+    }
+
+    const size_t selectedCount = primaryStats.selectedCount + fallbackStats.selectedCount;
+    const size_t renderReadyCount = primaryStats.renderReadyCount + fallbackStats.renderReadyCount;
+    const bool keepPriorGeometry = renderReadyCount == 0 && selectedCount > 0;
+
+    bool activelyLoading = keepPriorGeometry || terrainTilesetStillLoading(primaryStats) ||
+        terrainTilesetHasPendingContent(primaryStats);
+    if (fallbackResult.has_value()) {
+        activelyLoading = activelyLoading || terrainTilesetStillLoading(fallbackStats) ||
+            terrainTilesetHasPendingContent(fallbackStats);
+    }
+    updateDeferUserTilesetsState(
+        activelyLoading, _impl->deferUserTilesets, _impl->terrainStableFrames);
+    setHyperTerrainLoadingActive(_impl->deferUserTilesets);
+
+    if (!keepPriorGeometry) {
+        const unsigned numChildren = _impl->tileGroup->getNumChildren();
+        for (unsigned i = 0; i < numChildren; ++i) {
+            _impl->tileGroup->getChild(i)->setNodeMask(0x0);
+        }
     }
 
     std::vector<PrimaryCoverageTile> primaryCoverage;

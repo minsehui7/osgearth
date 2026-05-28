@@ -65,6 +65,11 @@ DrapeableNode::traverse(osg::NodeVisitor& nv)
                 DrapingCullSet& cullSet = dm->get(cv->getCurrentCamera());
                 cullSet.push(this, cv->getNodePath(), nv.getFrameStamp());
             }
+            else
+            {
+                // DrapingManager missing (e.g. cull outside MapNode): draw children directly.
+                osg::Group::traverse(nv);
+            }
         }
     }
     else if (_drapingEnabled && !_intersectionTraversalEnabled && nv.getVisitorType() == nv.INTERSECTION_VISITOR)

@@ -6,6 +6,7 @@
 #define OSGEARTH_CESIUM_SETTINGS_H
 
 #include "Export"
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -39,6 +40,21 @@ namespace osgEarth {
         OSGEARTHCESIUM_EXPORT void setTileRebuildsPerFrameProvider(TileRebuildsPerFrameFn fn);
         /// Fractional tile main-thread rebuild budget per frame (default 0.25 when no provider).
         OSGEARTHCESIUM_EXPORT double tileRebuildsPerFrameRate();
+
+        /// While HyperTerrain is streaming, user 3D Tiles defer updateView/drape (see HyperTerrainBridge).
+        OSGEARTHCESIUM_EXPORT void setHyperTerrainLoadingActive(bool active);
+        OSGEARTHCESIUM_EXPORT bool isHyperTerrainLoadingActive();
+
+        /// Multiplier on user 3D Tiles rebuild rate while HyperTerrain is loading (default 0.05).
+        OSGEARTHCESIUM_EXPORT void setUserTilesetRebuildScaleWhileTerrainLoads(double scale);
+        OSGEARTHCESIUM_EXPORT double getUserTilesetRebuildScaleWhileTerrainLoads();
+
+        /// Rebuild rate for CesiumTilesetNode (user layers), not HyperTerrainBridge.
+        OSGEARTHCESIUM_EXPORT double userTilesetRebuildsPerFrameRate();
+        /// Minimum main-thread tiles per pass for user tilesets (0 while terrain loads, else 4).
+        OSGEARTHCESIUM_EXPORT uint32_t userTilesetMinMainThreadTilesPerPass();
+        /// Max drain passes in CesiumTilesetNode cull while terrain is loading (default 2 vs 12).
+        OSGEARTHCESIUM_EXPORT int userTilesetMaxDrainPassesWhileTerrainLoads();
     }
 }
 

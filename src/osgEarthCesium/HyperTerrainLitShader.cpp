@@ -602,8 +602,9 @@ void initHyperTerrainLitStateSet(osg::StateSet* ss) {
     ss->addUniform(scaleU);
     ss->addUniform(alphaU);
     ss->addUniform(activeU);
-    ss->getOrCreateUniform("oe_overlay_ready", osg::Uniform::FLOAT)->set(0.0f);
-    ss->getOrCreateUniform("oe_overlay_texmatrix", osg::Uniform::FLOAT_MAT4)->set(osg::Matrixf::identity());
+    // Do not set oe_overlay_ready / oe_overlay_texmatrix here: per-tile defaults (ready=0)
+    // override DrapingTechnique uniforms from OverlayDecorator::_sharedTerrainStateSet during
+    // draw and disable applyDrapeOverlay() even when the drape RTT is valid.
     auto* blendFn = new osg::BlendFunc(osg::BlendFunc::SRC_ALPHA, osg::BlendFunc::ONE_MINUS_SRC_ALPHA);
     ss->setAttributeAndModes(blendFn, osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
     ss->setMode(GL_BLEND, osg::StateAttribute::ON | osg::StateAttribute::OVERRIDE);
