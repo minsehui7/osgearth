@@ -41,7 +41,8 @@ namespace osgEarth {
         /// Fractional tile main-thread rebuild budget per frame (default 0.25 when no provider).
         OSGEARTHCESIUM_EXPORT double tileRebuildsPerFrameRate();
 
-        /// While HyperTerrain is streaming, user 3D Tiles defer updateView/drape (see HyperTerrainBridge).
+        /// While HyperTerrain is streaming, defer user 3D Tiles loading (updateView/HTTP/slots).
+        /// Does not hide already-loaded tiles; app layer visibility is unchanged.
         OSGEARTHCESIUM_EXPORT void setHyperTerrainLoadingActive(bool active);
         OSGEARTHCESIUM_EXPORT bool isHyperTerrainLoadingActive();
 

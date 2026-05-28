@@ -410,6 +410,7 @@ SET(TARGET_H
     TerrainOptions
     TerrainProfile
     TerrainResources
+    TerrainStreamingCullPolicy
     TerrainTileModel
     TerrainTileModelFactory
     TerrainTileNode
@@ -702,6 +703,7 @@ set(TARGET_SRC
     Random.cpp
     RectangleNode.cpp
     Registry.cpp
+    TerrainStreamingCullPolicy.cpp
     RenderSymbol.cpp
     ResampleFilter.cpp
     Resource.cpp

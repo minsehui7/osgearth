@@ -206,6 +206,42 @@ bool HyperTerrainPrepareRendererResources::tryResolveTileRenderData(
     return resolveRenderResources(rc->getRenderResources(), outData);
 }
 
+bool HyperTerrainPrepareRendererResources::tileImageryReadyForDisplay(
+    const Cesium3DTilesSelection::Tile& tile) const
+{
+    HyperTerrainTileRenderData tileData;
+    if (!tryResolveTileRenderData(tile, tileData) || !tileData.geom.valid()) {
+        return false;
+    }
+
+    osg::StateSet* ss = tileData.geom->getStateSet();
+    if (!ss) {
+        return false;
+    }
+
+    const osg::Uniform* activeU = ss->getUniform("u_overlayActive");
+    if (!activeU) {
+        return false;
+    }
+
+    for (int i = 0; i < kMaxOverlays; ++i) {
+        int active = 0;
+        if (!activeU->getElement(i, active) || active == 0) {
+            continue;
+        }
+        auto* tex = dynamic_cast<osg::Texture2D*>(
+            ss->getTextureAttribute(i, osg::StateAttribute::TEXTURE));
+        if (!tex) {
+            continue;
+        }
+        const osg::Image* image = tex->getImage();
+        if (image && image->valid() && image->s() > 0 && image->t() > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 float HyperTerrainPrepareRendererResources::rasterOverlayAlpha(
     const CesiumRasterOverlays::RasterOverlay* overlay) const
 {

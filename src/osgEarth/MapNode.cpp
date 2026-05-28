@@ -3,6 +3,7 @@
 * MIT License
 */
 #include <osgEarth/MapNode>
+#include <osgEarth/TerrainStreamingCullPolicy>
 #include <osgEarth/CascadeDrapingDecorator>
 #include <osgEarth/ClampingTechnique>
 #include <osgEarth/CullingUtils>
@@ -913,15 +914,19 @@ MapNode::traverse( osg::NodeVisitor& nv )
             }
         }
 
-        // Cull map layers before terrain so DrapeableNode entries (e.g. clamped 3D Tiles)
-        // are registered in DrapingCullSet before DrapingTechnique builds overlay RTT.
+        // While HyperTerrain is streaming: terrain-first cull (user 3D Tiles defer).
+        // When stable: layers-first so clamped 3D Tiles register in DrapingCullSet before RTT.
+        const bool terrainFirstCull = terrainStreamingPrioritizeTerrainCull();
+        if (terrainFirstCull && _terrainGroup)
+            _terrainGroup->accept(nv);
+
         for (auto& child : _children)
         {
             if (child.get() != _terrainGroup)
                 child->accept(nv);
         }
 
-        if (_terrainGroup)
+        if (!terrainFirstCull && _terrainGroup)
             _terrainGroup->accept(nv);
 
         for(int i=0; i< stateSetsPushed; ++i)

@@ -1,0 +1,23 @@
+/* osgEarth
+ * Copyright 2025 Pelican Mapping
+ * MIT License
+ */
+#pragma once
+
+#include <osgEarth/Export>
+#include <functional>
+
+namespace osgEarth
+{
+    using TerrainStreamingPrioritizeTerrainCullFn = std::function<bool()>;
+
+    /**
+     * When the callback returns true, MapNode culls terrain before map layers so
+     * HyperTerrain UPDATE/CULL work runs before user 3D Tiles updateView/loadTiles.
+     * When false, layers are culled first (clamped 3D Tiles drape registration).
+     */
+    OSGEARTH_EXPORT void setTerrainStreamingPrioritizeTerrainCullFn(
+        TerrainStreamingPrioritizeTerrainCullFn fn);
+
+    OSGEARTH_EXPORT bool terrainStreamingPrioritizeTerrainCull();
+} // namespace osgEarth

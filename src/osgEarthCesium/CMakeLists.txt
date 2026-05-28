@@ -30,7 +30,8 @@ if (CESIUM_NATIVE_FOUND)
         HyperTerrainLitShader.cpp
         HyperTerrainPrepareRendererResources.cpp
         HyperTerrainRasterRenderer.cpp
-        HyperTerrainImageryFactory.cpp)
+        HyperTerrainImageryFactory.cpp
+        UserTilesetLoadGate.cpp)
         
     set(TARGET_H
         CesiumTilesetNode

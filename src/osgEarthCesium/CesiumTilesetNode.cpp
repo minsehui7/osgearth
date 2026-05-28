@@ -7,6 +7,7 @@
 #include "CesiumIon"
 #include "PrepareRenderResources"
 #include "Settings"
+#include "UserTilesetLoadGate"
 
 #include <osgEarth/GeoCommon>
 #include <osgEarth/Notify>
@@ -95,6 +96,7 @@ CesiumTilesetNode::CesiumTilesetNode(unsigned int assetID, const std::string& se
         tileset->getOverlays().add(ionRasterOverlay);
     }    
     _tileset = tileset;
+    registerUserTileset(tileset, static_cast<int64_t>(assetID), std::string());
 
     setCullingActive(false);    
 }
@@ -122,6 +124,7 @@ CesiumTilesetNode::CesiumTilesetNode(const std::string& url, const std::string& 
         tileset->getOverlays().add(ionRasterOverlay);
     }
     _tileset = tileset;
+    registerUserTileset(tileset, 0, url);
 
     setCullingActive(false);
 }
@@ -133,6 +136,7 @@ CesiumTilesetNode::~CesiumTilesetNode()
         return;
 
     auto* tileset = static_cast<Cesium3DTilesSelection::Tileset*>(_tileset);
+    unregisterUserTileset(tileset);
     tileset->waitForAllLoadsToComplete(150.0);
     delete tileset;
     _tileset = nullptr;
@@ -256,6 +260,12 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
 
     if (nv.getVisitorType() == nv.CULL_VISITOR)
     {
+        // HyperTerrain streaming: skip updateView/loadTiles/HTTP churn; keep drawing loaded tiles.
+        if (isHyperTerrainLoadingActive()) {
+            osg::Group::traverse(nv);
+            return;
+        }
+
         const osgUtil::CullVisitor* cv = nv.asCullVisitor();
         osg::Vec3d osgEye, osgCenter, osgUp;
         cv->getModelViewMatrix()->getLookAt(osgEye, osgCenter, osgUp);
@@ -288,12 +298,6 @@ CesiumTilesetNode::traverse(osg::NodeVisitor& nv)
         {
             osg::Group* parent = tileParent();
             parent->removeChildren(0, parent->getNumChildren());
-            osg::Group::traverse(nv);
-            return;
-        }
-
-        // HyperTerrain streaming: skip updateView/dispatch/drape tile churn (budget alone is not enough).
-        if (isHyperTerrainLoadingActive()) {
             osg::Group::traverse(nv);
             return;
         }

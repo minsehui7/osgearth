@@ -1,0 +1,38 @@
+/* osgEarth - Geospatial SDK for OpenSceneGraph
+ * Copyright 2020 Pelican Mapping
+ * MIT License
+ */
+#ifndef OSGEARTH_CESIUM_USER_TILESET_LOAD_GATE_H
+#define OSGEARTH_CESIUM_USER_TILESET_LOAD_GATE_H
+
+#include "Export"
+#include <cstdint>
+#include <string>
+
+namespace Cesium3DTilesSelection {
+class Tileset;
+}
+
+namespace osgEarth::Cesium {
+
+OSGEARTHCESIUM_EXPORT void clearTerrainLoadingExclusions();
+OSGEARTHCESIUM_EXPORT void registerTerrainLoadingExclusionIonAsset(int64_t ionAssetId);
+OSGEARTHCESIUM_EXPORT void registerTerrainLoadingExclusionUrl(const std::string& rootUrl);
+
+OSGEARTHCESIUM_EXPORT void registerUserTileset(
+    Cesium3DTilesSelection::Tileset* tileset,
+    int64_t ionAssetId,
+    const std::string& rootUrl);
+
+OSGEARTHCESIUM_EXPORT void unregisterUserTileset(
+    Cesium3DTilesSelection::Tileset* tileset);
+
+/// True when this HTTP URL belongs to a registered user 3D Tiles layer (not HyperTerrain).
+OSGEARTHCESIUM_EXPORT bool shouldDeferUserTilesetNetworkRequest(const std::string& url);
+
+/// Pause/resume worker and main-thread tile loads for registered user tilesets.
+OSGEARTHCESIUM_EXPORT void applyUserTilesetLoadDeferPolicy(bool defer);
+
+} // namespace osgEarth::Cesium
+
+#endif

@@ -135,11 +135,10 @@ double osgEarth::Cesium::getUserTilesetRebuildScaleWhileTerrainLoads()
 
 double osgEarth::Cesium::userTilesetRebuildsPerFrameRate()
 {
-    double rate = tileRebuildsPerFrameRate();
     if (isHyperTerrainLoadingActive()) {
-        rate *= getUserTilesetRebuildScaleWhileTerrainLoads();
+        return 0.0;
     }
-    return rate;
+    return tileRebuildsPerFrameRate();
 }
 
 uint32_t osgEarth::Cesium::userTilesetMinMainThreadTilesPerPass()

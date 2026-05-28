@@ -103,6 +103,8 @@ public:
         const Cesium3DTilesSelection::Tile& tile,
         HyperTerrainTileRenderData& outData) const;
 
+    bool tileImageryReadyForDisplay(const Cesium3DTilesSelection::Tile& tile) const;
+
     void setRasterOverlayAlpha(
         const CesiumRasterOverlays::RasterOverlay* overlay,
         float alpha);
