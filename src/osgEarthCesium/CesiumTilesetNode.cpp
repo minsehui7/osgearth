@@ -116,6 +116,10 @@ CesiumTilesetNode::CesiumTilesetNode(const std::string& url, const std::string& 
     options.minimumRenderableLevel = minimumRenderableLevel;
     options.contentOptions.generateMissingNormalsSmooth = true;
     options.rendererOptions = renderStyle;
+    // Local file:// Hyper3DTiles sets (e.g. nationwide vector caches): default preload loads
+    // culled siblings/ancestors and can pull 10^5+ GLB into RAM. Visible tiles still load normally.
+    options.preloadAncestors = false;
+    options.preloadSiblings = false;
     Cesium3DTilesSelection::Tileset* tileset = new Cesium3DTilesSelection::Tileset(externals, url, options);
     for (auto overlay : overlays)
     {
