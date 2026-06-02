@@ -3,6 +3,12 @@
 * MIT License
 */
 
+// This translation unit implements osgEarthCesium exports. Define the library
+// macro before including Settings so declarations match definitions (MSVC C4273).
+#if !defined(OSGEARTHCESIUM_LIBRARY_STATIC) && !defined(OSGEARTHCESIUM_LIBRARY)
+#define OSGEARTHCESIUM_LIBRARY
+#endif
+
 #include "Settings"
 #include "CesiumIon"
 #include "HyperTerrainImageryFactory"
