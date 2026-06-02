@@ -18,8 +18,10 @@ static std::atomic<bool> s_logTerrainRequest{false};
 static std::atomic<bool> s_logTmsRequest{false};
 static std::atomic<bool> s_cesiumShuttingDown{false};
 static osgEarth::Cesium::TileRebuildsPerFrameFn s_tileRebuildsPerFrameProvider;
+static osgEarth::Cesium::TileRebuildsPerFrameFn s_terrainRebuildsPerFrameProvider;
 static std::atomic<bool> s_hyperTerrainLoadingActive{true};
 static std::atomic<double> s_userTilesetRebuildScaleWhileTerrainLoads{0.05};
+static std::atomic<uint32_t> s_maximumSimultaneousTmsLoads{20};
 
 namespace
 {
@@ -83,6 +85,16 @@ void osgEarth::Cesium::setLogTmsRequest(bool enabled)
     HyperTerrainImageryFactory::refreshTilesetLoggerLevel();
 }
 
+void osgEarth::Cesium::setMaximumSimultaneousTmsLoads(uint32_t value)
+{
+    s_maximumSimultaneousTmsLoads.store(std::max(1u, value), std::memory_order_relaxed);
+}
+
+uint32_t osgEarth::Cesium::getMaximumSimultaneousTmsLoads()
+{
+    return s_maximumSimultaneousTmsLoads.load(std::memory_order_relaxed);
+}
+
 void osgEarth::Cesium::requestShutdown()
 {
     s_cesiumShuttingDown.store(true, std::memory_order_release);
@@ -108,6 +120,19 @@ double osgEarth::Cesium::tileRebuildsPerFrameRate()
 {
     if (s_tileRebuildsPerFrameProvider) {
         return std::max(0.0, s_tileRebuildsPerFrameProvider());
+    }
+    return 0.25;
+}
+
+void osgEarth::Cesium::setTerrainRebuildsPerFrameProvider(TileRebuildsPerFrameFn fn)
+{
+    s_terrainRebuildsPerFrameProvider = std::move(fn);
+}
+
+double osgEarth::Cesium::terrainRebuildsPerFrameRate()
+{
+    if (s_terrainRebuildsPerFrameProvider) {
+        return std::max(0.0, s_terrainRebuildsPerFrameProvider());
     }
     return 0.25;
 }

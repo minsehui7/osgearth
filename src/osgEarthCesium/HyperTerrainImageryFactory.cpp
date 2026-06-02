@@ -133,7 +133,10 @@ std::shared_ptr<spdlog::logger> createTilesetLoggerLocked()
 
 CesiumRasterOverlays::RasterOverlayOptions currentRasterOverlayOpts()
 {
-    return {};
+    CesiumRasterOverlays::RasterOverlayOptions opts;
+    opts.maximumSimultaneousTileLoads =
+        osgEarth::Cesium::getMaximumSimultaneousTmsLoads();
+    return opts;
 }
 
 } // namespace

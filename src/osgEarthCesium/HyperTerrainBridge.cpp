@@ -235,7 +235,7 @@ void applyMainThreadRebuildBudget(
     }
 
     Cesium3DTilesSelection::TilesetOptions& options = tileset->getOptions();
-    const double rate = tileRebuildsPerFrameRate();
+    const double rate = terrainRebuildsPerFrameRate();
     if (rate <= 0.0) {
         options.mainThreadLoadingTimeLimit = 0.0;
         options.maximumMainThreadTilesPerLoadPass = 0;

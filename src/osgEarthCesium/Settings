@@ -30,6 +30,10 @@ namespace osgEarth {
         OSGEARTHCESIUM_EXPORT bool getLogTmsRequest();
         void OSGEARTHCESIUM_EXPORT setLogTmsRequest(bool enabled);
 
+        /// RasterOverlayOptions::maximumSimultaneousTileLoads for TMS imagery (default 20).
+        OSGEARTHCESIUM_EXPORT void setMaximumSimultaneousTmsLoads(uint32_t value);
+        OSGEARTHCESIUM_EXPORT uint32_t getMaximumSimultaneousTmsLoads();
+
         /// Signal in-flight async tile loads to bail out. Cheap atomic; safe from any thread.
         OSGEARTHCESIUM_EXPORT void requestShutdown();
         OSGEARTHCESIUM_EXPORT bool isShuttingDown();
@@ -40,6 +44,10 @@ namespace osgEarth {
         OSGEARTHCESIUM_EXPORT void setTileRebuildsPerFrameProvider(TileRebuildsPerFrameFn fn);
         /// Fractional tile main-thread rebuild budget per frame (default 0.25 when no provider).
         OSGEARTHCESIUM_EXPORT double tileRebuildsPerFrameRate();
+
+        OSGEARTHCESIUM_EXPORT void setTerrainRebuildsPerFrameProvider(TileRebuildsPerFrameFn fn);
+        /// HyperTerrain Ion/TMS main-thread tile budget per frame (default 0.25 when no provider).
+        OSGEARTHCESIUM_EXPORT double terrainRebuildsPerFrameRate();
 
         /// While HyperTerrain is streaming, defer user 3D Tiles loading (updateView/HTTP/slots).
         /// Does not hide already-loaded tiles; app layer visibility is unchanged.
