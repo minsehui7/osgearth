@@ -206,6 +206,29 @@ bool HyperTerrainPrepareRendererResources::tryResolveTileRenderData(
     return resolveRenderResources(rc->getRenderResources(), outData);
 }
 
+bool HyperTerrainPrepareRendererResources::tryResolveTileAttachedXform(
+    const Cesium3DTilesSelection::Tile& tile,
+    osg::MatrixTransform*& outXform) const
+{
+    outXform = nullptr;
+    HyperTerrainTileRenderData tileData;
+    if (!tryResolveTileRenderData(tile, tileData) || !tileData.xform.valid()) {
+        return false;
+    }
+    osg::MatrixTransform* xform = tileData.xform.get();
+    if (!m_sceneRoot.valid()) {
+        return false;
+    }
+    const unsigned parentCount = xform->getNumParents();
+    for (unsigned p = 0; p < parentCount; ++p) {
+        if (xform->getParent(p) == m_sceneRoot.get()) {
+            outXform = xform;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool HyperTerrainPrepareRendererResources::tileImageryReadyForDisplay(
     const Cesium3DTilesSelection::Tile& tile) const
 {
@@ -473,6 +496,8 @@ void* HyperTerrainPrepareRendererResources::prepareInMainThread(
 
     auto* xformNode = new osg::MatrixTransform(osgMat);
     xformNode->addChild(geode);
+    // OSG defaults NodeMask to visible; stay off until Bridge tryShowTile passes mesh/imagery gates.
+    xformNode->setNodeMask(0x0);
 
     if (m_sceneRoot.valid()) {
         m_sceneRoot->addChild(xformNode);

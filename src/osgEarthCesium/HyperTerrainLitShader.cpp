@@ -579,7 +579,16 @@ static osg::ref_ptr<osg::Program> buildProgram(HyperTerrainLitColorMode colorMod
 constexpr int kHyperTerrainMaxOverlays = 4;
 
 osg::ref_ptr<osg::Program> createHyperTerrainLitProgram(HyperTerrainLitColorMode colorMode) {
-    return buildProgram(colorMode);
+    static osg::ref_ptr<osg::Program> s_fixedTerrainBaseProgram;
+    static osg::ref_ptr<osg::Program> s_perVertexAlbedoProgram;
+
+    osg::ref_ptr<osg::Program>& slot = (colorMode == HyperTerrainLitColorMode::PerVertexAlbedo)
+        ? s_perVertexAlbedoProgram
+        : s_fixedTerrainBaseProgram;
+    if (!slot.valid()) {
+        slot = buildProgram(colorMode);
+    }
+    return slot;
 }
 
 void initHyperTerrainLitStateSet(osg::StateSet* ss) {

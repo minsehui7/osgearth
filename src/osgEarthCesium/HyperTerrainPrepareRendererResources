@@ -103,6 +103,11 @@ public:
         const Cesium3DTilesSelection::Tile& tile,
         HyperTerrainTileRenderData& outData) const;
 
+    /// Tile mesh xform when it is a direct child of sceneRoot (HyperTerrain _tileGroup).
+    bool tryResolveTileAttachedXform(
+        const Cesium3DTilesSelection::Tile& tile,
+        osg::MatrixTransform*& outXform) const;
+
     bool tileImageryReadyForDisplay(const Cesium3DTilesSelection::Tile& tile) const;
 
     void setRasterOverlayAlpha(

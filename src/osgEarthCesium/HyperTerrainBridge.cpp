@@ -26,6 +26,7 @@
 
 #include <osgEarth/Notify>
 #include <osg/Group>
+#include <osg/MatrixTransform>
 
 #include <glm/glm.hpp>
 
@@ -181,7 +182,8 @@ Cesium3DTilesSelection::ViewState buildViewState(const HyperTerrainViewParams& p
     const glm::dvec3 up(p.upX, p.upY, p.upZ);
     double vw = p.viewportWidth;
     double vh = p.viewportHeight;
-    if (p.haveViewPixelDims && p.viewPixelWidth > 0.0 && p.viewPixelHeight > 0.0) {
+    if ((vw < 1.0 || vh < 1.0) && p.haveViewPixelDims
+        && p.viewPixelWidth > 0.0 && p.viewPixelHeight > 0.0) {
         vw = p.viewPixelWidth;
         vh = p.viewPixelHeight;
     }
@@ -302,7 +304,7 @@ void drainMainThreadUntilDrawable(
     for (int pass = 0; pass < 12 && stats.selectedCount > 0 && stats.renderReadyCount == 0; ++pass) {
         tileset->getAsyncSystem().dispatchMainThreadTasks();
         stats = countTerrainTileSelection(tilesToRender, renderer, requireImageryForDisplay);
-        if (stats.renderContentCount == 0) {
+        if (stats.renderContentCount == 0 || stats.renderReadyCount > 0) {
             break;
         }
     }
@@ -580,10 +582,12 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
     applyUserTilesetLoadDeferPolicy(_impl->deferUserTilesets);
     setHyperTerrainLoadingActive(_impl->deferUserTilesets);
 
-    if (renderReadyCount > 0) {
-        const unsigned numChildren = _impl->tileGroup->getNumChildren();
+    // Hide every OSG tile under _tileGroup; tryShowTile re-enables the current selection only.
+    // Full sweep (not lastVisible diff) so tiles skipped by ion/dual/imagery gates cannot zombie-draw.
+    if (osg::Group* const tileGroup = _impl->tileGroup.get()) {
+        const unsigned numChildren = tileGroup->getNumChildren();
         for (unsigned i = 0; i < numChildren; ++i) {
-            _impl->tileGroup->getChild(i)->setNodeMask(0x0);
+            tileGroup->getChild(i)->setNodeMask(0x0);
         }
     }
 
@@ -597,21 +601,8 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
     auto tryShowTile = [this, requireImageryForDisplay](const Tile::ConstPointer& tilePtr) {
         if (!tilePtr || !_impl->renderer)
             return false;
-        HyperTerrainTileRenderData renderData;
-        if (!_impl->renderer->tryResolveTileRenderData(*tilePtr, renderData) || !renderData.xform.valid())
-            return false;
-        osg::MatrixTransform* xform = renderData.xform.get();
-        if (!xform)
-            return false;
-        bool attachedToTileGroup = false;
-        const unsigned parentCount = xform->getNumParents();
-        for (unsigned p = 0; p < parentCount; ++p) {
-            if (xform->getParent(p) == _impl->tileGroup.get()) {
-                attachedToTileGroup = true;
-                break;
-            }
-        }
-        if (!attachedToTileGroup)
+        osg::MatrixTransform* xform = nullptr;
+        if (!_impl->renderer->tryResolveTileAttachedXform(*tilePtr, xform) || !xform)
             return false;
         // Mesh is created before TMS attachRasterInMainThread; keep NodeMask off until imagery is live.
         if (requireImageryForDisplay &&
