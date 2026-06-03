@@ -42,6 +42,7 @@ struct OSGEARTHCESIUM_EXPORT HyperTerrainViewParams {
     double viewPixelWidth{0.0};
     double viewPixelHeight{0.0};
     bool haveViewPixelDims{false};
+    double hFovRad{0.698132};
     double vFovRad{0.698132};
     bool hasCameraData{false};
 };

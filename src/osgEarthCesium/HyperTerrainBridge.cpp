@@ -187,7 +187,8 @@ Cesium3DTilesSelection::ViewState buildViewState(const HyperTerrainViewParams& p
     }
     const glm::dvec2 viewportSize(vw, vh);
     const double vFov = p.vFovRad;
-    const double hFov = vFov * (vw / vh);
+    const double hFov =
+        (p.hFovRad > 0.0) ? p.hFovRad : (vFov * (vw / vh));
 
     return Cesium3DTilesSelection::ViewState(
         position, direction, up, viewportSize, hFov, vFov);
