@@ -34,6 +34,7 @@
 #include <cmath>
 #include <optional>
 #include <sstream>
+#include <unordered_set>
 #include <vector>
 
 using namespace osgEarth::Cesium;
@@ -44,9 +45,10 @@ namespace {
 constexpr const char* kDefaultCesiumIonServer = "https://api.cesium.com/";
 
 constexpr size_t kPruneChildMargin = 32;
+constexpr size_t kLruExtraKeepMargin = 64;
 constexpr int kPruneRateLimitFrames = 30;
 constexpr int kDiagLogIntervalFrames = 300;
-constexpr uint32_t kStuckOverlayFrameThreshold = 180;
+constexpr uint32_t kStuckOverlayFrameThreshold = 1;
 constexpr int kDrainMaxPassesMeshPending = 12;
 constexpr int kDrainMaxPassesImageryPending = 3;
 constexpr int kDrainStalePassLimit = 2;
@@ -327,15 +329,16 @@ void drainMainThreadUntilDrawable(
             ? kDrainMaxPassesImageryPending
             : kDrainMaxPassesMeshPending;
 
-    for (int pass = 0; pass < maxPasses && stats.selectedCount > 0 && stats.renderReadyCount == 0;
+    for (int pass = 0; pass < maxPasses && stats.selectedCount > stats.renderReadyCount;
          ++pass) {
         ++outPassesUsed;
         tileset->getAsyncSystem().dispatchMainThreadTasks();
         stats = countTerrainTileSelection(tilesToRender, renderer, requireImageryForDisplay);
-        if (stats.renderContentCount == 0 || stats.renderReadyCount > 0) {
+        if (stats.renderContentCount == 0) {
             break;
         }
-        if (requireImageryForDisplay && stats.pendingImageryCount >= stats.renderContentCount) {
+        if (requireImageryForDisplay && stats.pendingImageryCount >= stats.renderContentCount &&
+            stats.renderReadyCount == 0) {
             break;
         }
         if (stats.renderContentCount == prevContent && stats.renderReadyCount == prevReady) {
@@ -348,6 +351,71 @@ void drainMainThreadUntilDrawable(
             prevReady = stats.renderReadyCount;
         }
     }
+}
+
+void collectSelectionXforms(
+    const std::vector<Tile::ConstPointer>& tiles,
+    const HyperTerrainPrepareRendererResources* renderer,
+    std::unordered_set<osg::MatrixTransform*>& outXforms)
+{
+    if (!renderer) {
+        return;
+    }
+    for (const auto& tilePtr : tiles) {
+        if (!tilePtr) {
+            continue;
+        }
+        osg::MatrixTransform* xform = nullptr;
+        if (renderer->tryResolveTileAttachedXform(*tilePtr, xform) && xform) {
+            outXforms.insert(xform);
+        }
+    }
+}
+
+void collectSelectionStateSets(
+    const std::vector<Tile::ConstPointer>& tiles,
+    const HyperTerrainPrepareRendererResources* renderer,
+    std::vector<osg::StateSet*>& outStateSets)
+{
+    if (!renderer) {
+        return;
+    }
+    for (const auto& tilePtr : tiles) {
+        if (!tilePtr) {
+            continue;
+        }
+        HyperTerrainTileRenderData renderData;
+        if (!renderer->tryResolveTileRenderData(*tilePtr, renderData) || !renderData.geom.valid()) {
+            continue;
+        }
+        osg::StateSet* ss = renderData.geom->getStateSet();
+        if (ss) {
+            outStateSets.push_back(ss);
+        }
+    }
+}
+
+size_t finalizeFailedRasterOverlaysForSelection(
+    HyperTerrainPrepareRendererResources* renderer,
+    const std::vector<Tile::ConstPointer>& tiles)
+{
+    if (!renderer) {
+        return 0;
+    }
+    size_t finalized = 0;
+    for (const auto& tilePtr : tiles) {
+        if (!tilePtr) {
+            continue;
+        }
+        finalized += renderer->finalizeFailedRasterOverlaysForTile(
+            const_cast<Tile&>(*tilePtr.get()));
+    }
+    return finalized;
+}
+
+size_t sceneChildTargetMax(const size_t selectedCount)
+{
+    return selectedCount + kPruneChildMargin + kLruExtraKeepMargin;
 }
 
 } // namespace
@@ -366,6 +434,7 @@ struct HyperTerrainBridge::Impl {
     int fallbackStuckImplicitRootFrames = 0;
     int pruneCooldownFrames = 0;
     int diagFrameCounter = 0;
+    int diagPerfFrameCounter = 0;
     int primaryDrainPassesLastFrame = 0;
     int fallbackDrainPassesLastFrame = 0;
     /// App-registered TMS overlays (Mapbox/VWorld/Naver/OWM); when zero, show mesh without imagery gate.
@@ -373,6 +442,7 @@ struct HyperTerrainBridge::Impl {
     /// While true, user 3D Tiles layers defer cull/update and drape work for terrain priority.
     bool deferUserTilesets = true;
     int terrainStableFrames = 0;
+    std::vector<osg::ref_ptr<osg::MatrixTransform>> lastVisibleXforms;
 };
 
 HyperTerrainBridge::HyperTerrainBridge(osg::Group* tileGroup)
@@ -617,16 +687,57 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
             _impl->fallbackDrainPassesLastFrame);
     }
 
-    if (_impl->renderer) {
-        _impl->renderer->recoverStuckOverlayUniforms(kStuckOverlayFrameThreshold);
+    const size_t selectedCount = primaryStats.selectedCount + fallbackStats.selectedCount;
+    const size_t renderContentCount =
+        primaryStats.renderContentCount + fallbackStats.renderContentCount;
+    const size_t renderReadyCount = primaryStats.renderReadyCount + fallbackStats.renderReadyCount;
+    const bool activelyLoading = renderContentCount == 0 && selectedCount > 0;
 
-        const size_t selectedCountForPrune =
-            primaryStats.selectedCount + fallbackStats.selectedCount;
+    size_t prunedOrphans = 0;
+    size_t detachedStale = 0;
+    size_t overlayRecovered = 0;
+    size_t finalizedOverlays = 0;
+
+    if (_impl->renderer) {
+        if (requireImageryForDisplay) {
+            finalizedOverlays += finalizeFailedRasterOverlaysForSelection(
+                _impl->renderer.get(), primaryResult.tilesToRenderThisFrame);
+            if (fallbackResult.has_value()) {
+                finalizedOverlays += finalizeFailedRasterOverlaysForSelection(
+                    _impl->renderer.get(), fallbackResult->tilesToRenderThisFrame);
+            }
+        }
+
+        std::vector<osg::StateSet*> selectionStateSets;
+        selectionStateSets.reserve(selectedCount);
+        collectSelectionStateSets(primaryResult.tilesToRenderThisFrame, renderer, selectionStateSets);
+        if (fallbackResult.has_value()) {
+            collectSelectionStateSets(
+                fallbackResult->tilesToRenderThisFrame, renderer, selectionStateSets);
+        }
+
+        overlayRecovered = selectionStateSets.empty()
+            ? 0
+            : _impl->renderer->recoverStuckOverlayUniformsForStateSets(
+                  selectionStateSets, kStuckOverlayFrameThreshold);
+
+        const size_t targetMaxChildren = sceneChildTargetMax(selectedCount);
+
+        std::unordered_set<osg::MatrixTransform*> protectedXforms;
+        protectedXforms.reserve(selectedCount);
+        collectSelectionXforms(primaryResult.tilesToRenderThisFrame, renderer, protectedXforms);
+        if (fallbackResult.has_value()) {
+            collectSelectionXforms(
+                fallbackResult->tilesToRenderThisFrame, renderer, protectedXforms);
+        }
+
         if (osg::Group* const tileGroup = _impl->tileGroup.get()) {
             const unsigned sceneChildren = tileGroup->getNumChildren();
-            if (sceneChildren > selectedCountForPrune + kPruneChildMargin) {
+            if (sceneChildren > targetMaxChildren) {
                 if (_impl->pruneCooldownFrames <= 0) {
-                    _impl->renderer->pruneSceneNodesWithoutHandles();
+                    prunedOrphans = _impl->renderer->pruneSceneNodesWithoutHandles();
+                    detachedStale = _impl->renderer->detachStaleSceneNodesFromRoot(
+                        protectedXforms, targetMaxChildren);
                     _impl->pruneCooldownFrames = kPruneRateLimitFrames;
                 } else {
                     --_impl->pruneCooldownFrames;
@@ -636,16 +747,6 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
             }
         }
     }
-
-    const size_t selectedCount = primaryStats.selectedCount + fallbackStats.selectedCount;
-    const size_t renderContentCount =
-        primaryStats.renderContentCount + fallbackStats.renderContentCount;
-    const size_t renderReadyCount = primaryStats.renderReadyCount + fallbackStats.renderReadyCount;
-
-    // Defer user 3D Tiles until at least one selected tile has mesh content on the main thread.
-    // Imagery readiness is enforced only for OSG display (tryShowTile); do not block the whole
-    // app on TMS/imagery or profile elevation sampling stalls when mesh already exists.
-    const bool activelyLoading = renderContentCount == 0 && selectedCount > 0;
 
     updateDeferUserTilesetsState(
         activelyLoading, _impl->deferUserTilesets, _impl->terrainStableFrames);
@@ -664,7 +765,7 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
             << " aliveHandles=" << _impl->renderer->aliveHandleCount()
             << " rasterAttachments=" << _impl->renderer->rasterAttachmentCount()
             << " selected=" << selectedCount
-            << " renderContent=" << (primaryStats.renderContentCount + fallbackStats.renderContentCount)
+            << " renderContent=" << renderContentCount
             << " pendingImagery="
             << (primaryStats.pendingImageryCount + fallbackStats.pendingImageryCount)
             << " renderReady=" << renderReadyCount
@@ -673,14 +774,13 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
         OSG_NOTICE << oss.str() << std::endl;
     }
 
-    // Hide every OSG tile under _tileGroup; tryShowTile re-enables the current selection only.
-    // Full sweep (not lastVisible diff) so tiles skipped by ion/dual/imagery gates cannot zombie-draw.
-    if (osg::Group* const tileGroup = _impl->tileGroup.get()) {
-        const unsigned numChildren = tileGroup->getNumChildren();
-        for (unsigned i = 0; i < numChildren; ++i) {
-            tileGroup->getChild(i)->setNodeMask(0x0);
+    for (const osg::ref_ptr<osg::MatrixTransform>& xformRef : _impl->lastVisibleXforms) {
+        osg::MatrixTransform* xform = xformRef.get();
+        if (xform) {
+            xform->setNodeMask(0x0);
         }
     }
+    _impl->lastVisibleXforms.clear();
 
     std::vector<PrimaryCoverageTile> primaryCoverage;
     appendPrimaryCoverageFromTiles(
@@ -694,13 +794,23 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
             return false;
         osg::MatrixTransform* xform = nullptr;
         if (!_impl->renderer->tryResolveTileAttachedXform(*tilePtr, xform) || !xform)
+            xform = nullptr;
+        if (!xform) {
+            HyperTerrainTileRenderData renderData;
+            if (!_impl->renderer->tryResolveTileRenderData(*tilePtr, renderData) || !renderData.xform.valid())
+                return false;
+            xform = renderData.xform.get();
+        }
+        if (!xform || !_impl->renderer->ensureTileXformAttached(xform))
             return false;
         // Mesh is created before TMS attachRasterInMainThread; keep NodeMask off until imagery is live.
+        // Failed TMS overlays are finalized earlier; proceed with any imagery that is ready.
         if (requireImageryForDisplay &&
             !_impl->renderer->tileImageryReadyForDisplay(*tilePtr)) {
             return false;
         }
         xform->setNodeMask(~0u);
+        _impl->lastVisibleXforms.emplace_back(xform);
         return true;
     };
 
@@ -731,6 +841,39 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
                 continue;
             tryShowTile(tilePtr);
         }
+    }
+
+    if (_impl->renderer && getLogHyperTerrainDiag() &&
+        ++_impl->diagPerfFrameCounter >= kDiagLogIntervalFrames) {
+        _impl->diagPerfFrameCounter = 0;
+        const unsigned sceneChildren = _impl->tileGroup.valid()
+            ? _impl->tileGroup->getNumChildren()
+            : 0u;
+        const uint32_t mainThreadBudget = _impl->primaryTileset
+            ? _impl->primaryTileset->getOptions().maximumMainThreadTilesPerLoadPass
+            : 0u;
+        std::ostringstream oss;
+        oss << "[HyperTerrain] perf sceneChildren=" << sceneChildren
+            << " targetMax=" << sceneChildTargetMax(selectedCount)
+            << " aliveHandles=" << _impl->renderer->aliveHandleCount()
+            << " rasterAttachments=" << _impl->renderer->rasterAttachmentCount()
+            << " selected=" << selectedCount
+            << " renderContent=" << renderContentCount
+            << " pendingImagery="
+            << (primaryStats.pendingImageryCount + fallbackStats.pendingImageryCount)
+            << " renderReady=" << renderReadyCount
+            << " visible=" << _impl->lastVisibleXforms.size()
+            << " drainPasses="
+            << (_impl->primaryDrainPassesLastFrame + _impl->fallbackDrainPassesLastFrame)
+            << " terrainRebuildRate=" << terrainRebuildsPerFrameRate()
+            << " mainThreadBudget=" << mainThreadBudget
+            << " deferUserTilesets=" << (_impl->deferUserTilesets ? 1 : 0)
+            << " activelyLoading=" << (activelyLoading ? 1 : 0)
+            << " prunedOrphans=" << prunedOrphans
+            << " detachedStale=" << detachedStale
+            << " overlayRecovered=" << overlayRecovered
+            << " finalizedOverlays=" << finalizedOverlays;
+        OSG_NOTICE << oss.str() << std::endl;
     }
 }
 

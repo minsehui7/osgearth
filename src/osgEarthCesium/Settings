@@ -30,6 +30,10 @@ namespace osgEarth {
         OSGEARTHCESIUM_EXPORT bool getLogTmsRequest();
         void OSGEARTHCESIUM_EXPORT setLogTmsRequest(bool enabled);
 
+        /// HyperTerrain frame perf diag (scene cache, budget, drain) via OSG_NOTICE every ~5s.
+        OSGEARTHCESIUM_EXPORT bool getLogHyperTerrainDiag();
+        void OSGEARTHCESIUM_EXPORT setLogHyperTerrainDiag(bool enabled);
+
         /// RasterOverlayOptions::maximumSimultaneousTileLoads for TMS imagery (default 20).
         OSGEARTHCESIUM_EXPORT void setMaximumSimultaneousTmsLoads(uint32_t value);
         OSGEARTHCESIUM_EXPORT uint32_t getMaximumSimultaneousTmsLoads();

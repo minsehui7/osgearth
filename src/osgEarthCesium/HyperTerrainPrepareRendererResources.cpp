@@ -230,6 +230,75 @@ bool HyperTerrainPrepareRendererResources::tryResolveTileAttachedXform(
     return false;
 }
 
+namespace {
+
+using RasterLoadState = CesiumRasterOverlays::RasterOverlayTile::LoadState;
+
+bool overlaySlotHasValidTexture(osg::StateSet* ss, int slot)
+{
+    auto* tex = dynamic_cast<osg::Texture2D*>(
+        ss->getTextureAttribute(slot, osg::StateAttribute::TEXTURE));
+    if (!tex) {
+        return false;
+    }
+    const osg::Image* image = tex->getImage();
+    return image && image->valid() && image->s() > 0 && image->t() > 0;
+}
+
+bool stateSetHasValidOverlayImagery(osg::StateSet* ss)
+{
+    if (!ss) {
+        return false;
+    }
+    const osg::Uniform* activeU = ss->getUniform("u_overlayActive");
+    if (!activeU) {
+        return false;
+    }
+    for (int slot = 0; slot < kMaxOverlays; ++slot) {
+        int active = 0;
+        if (!activeU->getElement(slot, active) || active == 0) {
+            continue;
+        }
+        if (overlaySlotHasValidTexture(ss, slot)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool overlaySlotActiveButInvalid(osg::StateSet* ss, int slot)
+{
+    const osg::Uniform* activeU = ss->getUniform("u_overlayActive");
+    if (!activeU) {
+        return false;
+    }
+    int active = 0;
+    if (!activeU->getElement(slot, active) || active == 0) {
+        return false;
+    }
+    return !overlaySlotHasValidTexture(ss, slot);
+}
+
+bool rasterOverlayTileLoadPending(const CesiumRasterOverlays::RasterOverlayTile* rasterTile)
+{
+    if (!rasterTile) {
+        return false;
+    }
+    switch (rasterTile->getState()) {
+    case RasterLoadState::Placeholder:
+    case RasterLoadState::Unloaded:
+    case RasterLoadState::Loading:
+    case RasterLoadState::Loaded:
+        return true;
+    case RasterLoadState::Failed:
+    case RasterLoadState::Done:
+    default:
+        return false;
+    }
+}
+
+} // namespace
+
 bool HyperTerrainPrepareRendererResources::tileImageryReadyForDisplay(
     const Cesium3DTilesSelection::Tile& tile) const
 {
@@ -243,27 +312,26 @@ bool HyperTerrainPrepareRendererResources::tileImageryReadyForDisplay(
         return false;
     }
 
-    const osg::Uniform* activeU = ss->getUniform("u_overlayActive");
-    if (!activeU) {
-        return false;
+    if (stateSetHasValidOverlayImagery(ss)) {
+        return true;
     }
 
-    for (int i = 0; i < kMaxOverlays; ++i) {
-        int active = 0;
-        if (!activeU->getElement(i, active) || active == 0) {
-            continue;
-        }
-        auto* tex = dynamic_cast<osg::Texture2D*>(
-            ss->getTextureAttribute(i, osg::StateAttribute::TEXTURE));
-        if (!tex) {
-            continue;
-        }
-        const osg::Image* image = tex->getImage();
-        if (image && image->valid() && image->s() > 0 && image->t() > 0) {
-            return true;
+    for (const Cesium3DTilesSelection::RasterMappedTo3DTile& mapped :
+         tile.getMappedRasterTiles()) {
+        if (rasterOverlayTileLoadPending(mapped.getLoadingTile()) ||
+            rasterOverlayTileLoadPending(mapped.getReadyTile())) {
+            return false;
         }
     }
-    return false;
+
+    for (int slot = 0; slot < kMaxOverlays; ++slot) {
+        if (overlaySlotActiveButInvalid(ss, slot)) {
+            return false;
+        }
+    }
+
+    // No overlay still loading; proceed with mesh and any imagery that already attached.
+    return true;
 }
 
 float HyperTerrainPrepareRendererResources::rasterOverlayAlpha(
@@ -531,8 +599,8 @@ void HyperTerrainPrepareRendererResources::free(
     }
     if (resolved && data.geom.valid()) {
         osg::StateSet* ss = data.geom->getStateSet();
-        m_stuckOverlayFrameCounts.erase(ss);
         std::lock_guard<std::mutex> lock(m_overlayMutex);
+        m_stuckOverlayFrameCounts.erase(ss);
         m_rasterAttachments.erase(
             std::remove_if(
                 m_rasterAttachments.begin(),
@@ -686,28 +754,65 @@ void HyperTerrainPrepareRendererResources::detachRasterInMainThread(
     }
 }
 
-namespace {
-
-bool overlaySlotActiveButInvalid(osg::StateSet* ss, int slot)
+size_t HyperTerrainPrepareRendererResources::clearInvalidOverlaySlotsOnStateSet(
+    osg::StateSet* stateSet)
 {
-    const osg::Uniform* activeU = ss->getUniform("u_overlayActive");
-    if (!activeU) {
-        return false;
+    if (!stateSet) {
+        return 0;
     }
-    int active = 0;
-    if (!activeU->getElement(slot, active) || active == 0) {
-        return false;
+
+    size_t clearedSlots = 0;
+    std::lock_guard<std::mutex> lock(m_overlayMutex);
+    for (int slot = 0; slot < kMaxOverlays; ++slot) {
+        if (!overlaySlotActiveButInvalid(stateSet, slot)) {
+            continue;
+        }
+        stateSet->removeTextureAttribute(slot, osg::StateAttribute::TEXTURE);
+        if (auto* u = stateSet->getUniform("u_overlayActive")) {
+            u->setElement(slot, 0);
+        }
+        m_rasterAttachments.erase(
+            std::remove_if(
+                m_rasterAttachments.begin(),
+                m_rasterAttachments.end(),
+                [&](const RasterAttachment& attachment) {
+                    return attachment.stateSet.get() == stateSet && attachment.slot == slot;
+                }),
+            m_rasterAttachments.end());
+        ++clearedSlots;
     }
-    auto* tex = dynamic_cast<osg::Texture2D*>(
-        ss->getTextureAttribute(slot, osg::StateAttribute::TEXTURE));
-    if (!tex) {
-        return true;
+    if (clearedSlots > 0) {
+        m_stuckOverlayFrameCounts.erase(stateSet);
     }
-    const osg::Image* image = tex->getImage();
-    return !image || !image->valid() || image->s() <= 0 || image->t() <= 0;
+    return clearedSlots;
 }
 
-} // namespace
+size_t HyperTerrainPrepareRendererResources::finalizeFailedRasterOverlaysForTile(
+    Cesium3DTilesSelection::Tile& tile)
+{
+    using AttachmentState = Cesium3DTilesSelection::RasterMappedTo3DTile::AttachmentState;
+
+    size_t finalized = 0;
+    for (Cesium3DTilesSelection::RasterMappedTo3DTile& mapped : tile.getMappedRasterTiles()) {
+        const CesiumRasterOverlays::RasterOverlayTile* loading = mapped.getLoadingTile();
+        const CesiumRasterOverlays::RasterOverlayTile* ready = mapped.getReadyTile();
+        const CesiumRasterOverlays::RasterOverlayTile* relevant = ready ? ready : loading;
+        if (!relevant || relevant->getState() != RasterLoadState::Failed) {
+            continue;
+        }
+        if (mapped.getState() == AttachmentState::Unattached) {
+            continue;
+        }
+        mapped.detachFromTile(*this, tile);
+        ++finalized;
+    }
+
+    HyperTerrainTileRenderData tileData;
+    if (tryResolveTileRenderData(tile, tileData) && tileData.geom.valid()) {
+        finalized += clearInvalidOverlaySlotsOnStateSet(tileData.geom->getStateSet());
+    }
+    return finalized;
+}
 
 size_t HyperTerrainPrepareRendererResources::pruneSceneNodesWithoutHandles()
 {
@@ -741,6 +846,135 @@ size_t HyperTerrainPrepareRendererResources::pruneSceneNodesWithoutHandles()
     return removed;
 }
 
+bool HyperTerrainPrepareRendererResources::ensureTileXformAttached(osg::MatrixTransform* xform)
+{
+    if (!xform || !m_sceneRoot.valid()) {
+        return false;
+    }
+    for (unsigned p = 0; p < xform->getNumParents(); ++p) {
+        if (xform->getParent(p) == m_sceneRoot.get()) {
+            return true;
+        }
+    }
+    m_sceneRoot->addChild(xform);
+    return true;
+}
+
+size_t HyperTerrainPrepareRendererResources::detachStaleSceneNodesFromRoot(
+    const std::unordered_set<osg::MatrixTransform*>& protectedXforms,
+    size_t targetMaxChildren)
+{
+    if (!m_sceneRoot.valid() || targetMaxChildren == 0) {
+        return 0;
+    }
+
+    const unsigned sceneChildren = m_sceneRoot->getNumChildren();
+    if (sceneChildren <= targetMaxChildren) {
+        return 0;
+    }
+
+    size_t needDetach = sceneChildren - targetMaxChildren;
+
+    struct Candidate {
+        osg::MatrixTransform* xform = nullptr;
+        uint64_t lastAccessTick = 0;
+    };
+    std::vector<Candidate> candidates;
+    candidates.reserve(sceneChildren);
+
+    {
+        std::lock_guard<std::mutex> lock(m_storeMutex);
+        candidates.reserve(m_store.size());
+        for (const TileRenderRecord& record : m_store) {
+            if (!record.alive || !record.data.xform.valid()) {
+                continue;
+            }
+            osg::MatrixTransform* xform = record.data.xform.get();
+            if (protectedXforms.find(xform) != protectedXforms.end()) {
+                continue;
+            }
+            bool attachedToRoot = false;
+            for (unsigned p = 0; p < xform->getNumParents(); ++p) {
+                if (xform->getParent(p) == m_sceneRoot.get()) {
+                    attachedToRoot = true;
+                    break;
+                }
+            }
+            if (!attachedToRoot) {
+                continue;
+            }
+            candidates.push_back({xform, record.lastAccessTick});
+        }
+    }
+
+    std::sort(
+        candidates.begin(),
+        candidates.end(),
+        [](const Candidate& a, const Candidate& b) {
+            return a.lastAccessTick < b.lastAccessTick;
+        });
+
+    size_t detached = 0;
+    for (const Candidate& candidate : candidates) {
+        if (detached >= needDetach) {
+            break;
+        }
+        osg::MatrixTransform* xform = candidate.xform;
+        if (!xform) {
+            continue;
+        }
+        for (int p = static_cast<int>(xform->getNumParents()) - 1; p >= 0; --p) {
+            if (xform->getParent(static_cast<unsigned>(p)) == m_sceneRoot.get()) {
+                m_sceneRoot->removeChild(xform);
+                xform->setNodeMask(0x0);
+                ++detached;
+                break;
+            }
+        }
+    }
+    return detached;
+}
+
+size_t HyperTerrainPrepareRendererResources::recoverStuckOverlayUniformsForStateSets(
+    const std::vector<osg::StateSet*>& stateSets,
+    uint32_t staleFrameThreshold)
+{
+    if (staleFrameThreshold == 0 || stateSets.empty()) {
+        return 0;
+    }
+
+    size_t clearedSlots = 0;
+    for (osg::StateSet* ss : stateSets) {
+        if (!ss) {
+            continue;
+        }
+        bool anyStuck = false;
+        for (int slot = 0; slot < kMaxOverlays; ++slot) {
+            if (overlaySlotActiveButInvalid(ss, slot)) {
+                anyStuck = true;
+                break;
+            }
+        }
+        if (!anyStuck) {
+            std::lock_guard<std::mutex> lock(m_overlayMutex);
+            m_stuckOverlayFrameCounts.erase(ss);
+            continue;
+        }
+
+        uint32_t staleFrames = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_overlayMutex);
+            staleFrames = ++m_stuckOverlayFrameCounts[ss];
+        }
+        if (staleFrames < staleFrameThreshold) {
+            continue;
+        }
+
+        clearedSlots += clearInvalidOverlaySlotsOnStateSet(ss);
+    }
+    return clearedSlots;
+}
+
 size_t HyperTerrainPrepareRendererResources::recoverStuckOverlayUniforms(
     uint32_t staleFrameThreshold)
 {
@@ -748,7 +982,7 @@ size_t HyperTerrainPrepareRendererResources::recoverStuckOverlayUniforms(
         return 0;
     }
 
-    std::vector<osg::ref_ptr<osg::StateSet>> stateSets;
+    std::vector<osg::StateSet*> stateSets;
     {
         std::lock_guard<std::mutex> lock(m_storeMutex);
         stateSets.reserve(m_store.size());
@@ -758,45 +992,12 @@ size_t HyperTerrainPrepareRendererResources::recoverStuckOverlayUniforms(
             }
             osg::StateSet* ss = record.data.geom->getStateSet();
             if (ss) {
-                stateSets.emplace_back(ss);
+                stateSets.push_back(ss);
             }
         }
     }
 
-    size_t clearedSlots = 0;
-    for (const osg::ref_ptr<osg::StateSet>& ssRef : stateSets) {
-        osg::StateSet* ss = ssRef.get();
-        bool anyStuck = false;
-        for (int slot = 0; slot < kMaxOverlays; ++slot) {
-            if (overlaySlotActiveButInvalid(ss, slot)) {
-                anyStuck = true;
-                break;
-            }
-        }
-        if (!anyStuck) {
-            m_stuckOverlayFrameCounts.erase(ss);
-            continue;
-        }
-
-        uint32_t& staleFrames = m_stuckOverlayFrameCounts[ss];
-        ++staleFrames;
-        if (staleFrames < staleFrameThreshold) {
-            continue;
-        }
-
-        for (int slot = 0; slot < kMaxOverlays; ++slot) {
-            if (!overlaySlotActiveButInvalid(ss, slot)) {
-                continue;
-            }
-            ss->removeTextureAttribute(slot, osg::StateAttribute::TEXTURE);
-            if (auto* u = ss->getUniform("u_overlayActive")) {
-                u->setElement(slot, 0);
-            }
-            ++clearedSlots;
-        }
-        m_stuckOverlayFrameCounts.erase(ss);
-    }
-    return clearedSlots;
+    return recoverStuckOverlayUniformsForStateSets(stateSets, staleFrameThreshold);
 }
 
 size_t HyperTerrainPrepareRendererResources::aliveHandleCount() const

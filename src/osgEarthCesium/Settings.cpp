@@ -22,6 +22,7 @@ static std::string CESIUM_KEY = "";
 static std::atomic<bool> s_log3DTilesRequest{false};
 static std::atomic<bool> s_logTerrainRequest{false};
 static std::atomic<bool> s_logTmsRequest{false};
+static std::atomic<bool> s_logHyperTerrainDiag{false};
 static std::atomic<bool> s_cesiumShuttingDown{false};
 static osgEarth::Cesium::TileRebuildsPerFrameFn s_tileRebuildsPerFrameProvider;
 static osgEarth::Cesium::TileRebuildsPerFrameFn s_terrainRebuildsPerFrameProvider;
@@ -89,6 +90,16 @@ void osgEarth::Cesium::setLogTmsRequest(bool enabled)
 {
     s_logTmsRequest.store(enabled, std::memory_order_relaxed);
     HyperTerrainImageryFactory::refreshTilesetLoggerLevel();
+}
+
+bool osgEarth::Cesium::getLogHyperTerrainDiag()
+{
+    return s_logHyperTerrainDiag.load(std::memory_order_relaxed);
+}
+
+void osgEarth::Cesium::setLogHyperTerrainDiag(bool enabled)
+{
+    s_logHyperTerrainDiag.store(enabled, std::memory_order_relaxed);
 }
 
 void osgEarth::Cesium::setMaximumSimultaneousTmsLoads(uint32_t value)

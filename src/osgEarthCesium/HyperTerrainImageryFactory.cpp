@@ -11,6 +11,7 @@
 #include <CesiumRasterOverlays/UrlTemplateRasterOverlay.h>
 #include <CesiumRasterOverlays/TileMapServiceRasterOverlay.h>
 #include <CesiumRasterOverlays/IonRasterOverlay.h>
+#include <CesiumGeometry/Rectangle.h>
 // RasterOverlayOptions is defined inside RasterOverlay.h
 #include <CesiumRasterOverlays/RasterOverlay.h>
 
@@ -237,6 +238,13 @@ HyperTerrainImageryFactory::createVWorldLabel()
     UrlTemplateRasterOverlayOptions opts;
     opts.minimumLevel = 7;
     opts.maximumLevel = 18;
+    // Service is Korea-only; avoid pointless HTTP outside this bounds.
+    constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+    opts.coverageRectangle = CesiumGeometry::Rectangle(
+        124.6 * kDegToRad,
+        33.1 * kDegToRad,
+        131.9 * kDegToRad,
+        38.5 * kDegToRad);
 
     return new UrlTemplateRasterOverlay("VWorldLabel", url, {}, opts, currentRasterOverlayOpts());
 }
