@@ -116,6 +116,15 @@ public:
 
     void setTmsImageryExposure(float exposure);
 
+    /// Remove _tileGroup children with no alive render handle (orphan OSG nodes).
+    size_t pruneSceneNodesWithoutHandles();
+
+    /// Clear overlay slots stuck active with invalid/empty textures so TMS can retry attach.
+    size_t recoverStuckOverlayUniforms(uint32_t staleFrameThreshold);
+
+    size_t aliveHandleCount() const;
+    size_t rasterAttachmentCount() const;
+
 private:
     struct TileRenderRecord {
         HyperTerrainTileRenderData data;
@@ -148,6 +157,7 @@ private:
     mutable std::mutex m_overlayMutex;
     std::unordered_map<const CesiumRasterOverlays::RasterOverlay*, float> m_overlayAlpha;
     std::vector<RasterAttachment> m_rasterAttachments;
+    std::unordered_map<const osg::StateSet*, uint32_t> m_stuckOverlayFrameCounts;
 
     osg::ref_ptr<osg::Group> m_sceneRoot;
 };

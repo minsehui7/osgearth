@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 
 #include <osg/BlendFunc>
 #include <osg/Geode>
@@ -530,6 +531,7 @@ void HyperTerrainPrepareRendererResources::free(
     }
     if (resolved && data.geom.valid()) {
         osg::StateSet* ss = data.geom->getStateSet();
+        m_stuckOverlayFrameCounts.erase(ss);
         std::lock_guard<std::mutex> lock(m_overlayMutex);
         m_rasterAttachments.erase(
             std::remove_if(
@@ -682,6 +684,137 @@ void HyperTerrainPrepareRendererResources::detachRasterInMainThread(
                 }),
             m_rasterAttachments.end());
     }
+}
+
+namespace {
+
+bool overlaySlotActiveButInvalid(osg::StateSet* ss, int slot)
+{
+    const osg::Uniform* activeU = ss->getUniform("u_overlayActive");
+    if (!activeU) {
+        return false;
+    }
+    int active = 0;
+    if (!activeU->getElement(slot, active) || active == 0) {
+        return false;
+    }
+    auto* tex = dynamic_cast<osg::Texture2D*>(
+        ss->getTextureAttribute(slot, osg::StateAttribute::TEXTURE));
+    if (!tex) {
+        return true;
+    }
+    const osg::Image* image = tex->getImage();
+    return !image || !image->valid() || image->s() <= 0 || image->t() <= 0;
+}
+
+} // namespace
+
+size_t HyperTerrainPrepareRendererResources::pruneSceneNodesWithoutHandles()
+{
+    if (!m_sceneRoot.valid()) {
+        return 0;
+    }
+
+    std::unordered_set<osg::MatrixTransform*> liveXforms;
+    {
+        std::lock_guard<std::mutex> lock(m_storeMutex);
+        liveXforms.reserve(m_store.size());
+        for (const TileRenderRecord& record : m_store) {
+            if (record.alive && record.data.xform.valid()) {
+                liveXforms.insert(record.data.xform.get());
+            }
+        }
+    }
+
+    size_t removed = 0;
+    for (int i = static_cast<int>(m_sceneRoot->getNumChildren()) - 1; i >= 0; --i) {
+        osg::Node* child = m_sceneRoot->getChild(static_cast<unsigned>(i));
+        auto* xform = dynamic_cast<osg::MatrixTransform*>(child);
+        if (!xform) {
+            continue;
+        }
+        if (liveXforms.find(xform) == liveXforms.end()) {
+            m_sceneRoot->removeChild(child);
+            ++removed;
+        }
+    }
+    return removed;
+}
+
+size_t HyperTerrainPrepareRendererResources::recoverStuckOverlayUniforms(
+    uint32_t staleFrameThreshold)
+{
+    if (staleFrameThreshold == 0) {
+        return 0;
+    }
+
+    std::vector<osg::ref_ptr<osg::StateSet>> stateSets;
+    {
+        std::lock_guard<std::mutex> lock(m_storeMutex);
+        stateSets.reserve(m_store.size());
+        for (const TileRenderRecord& record : m_store) {
+            if (!record.alive || !record.data.geom.valid()) {
+                continue;
+            }
+            osg::StateSet* ss = record.data.geom->getStateSet();
+            if (ss) {
+                stateSets.emplace_back(ss);
+            }
+        }
+    }
+
+    size_t clearedSlots = 0;
+    for (const osg::ref_ptr<osg::StateSet>& ssRef : stateSets) {
+        osg::StateSet* ss = ssRef.get();
+        bool anyStuck = false;
+        for (int slot = 0; slot < kMaxOverlays; ++slot) {
+            if (overlaySlotActiveButInvalid(ss, slot)) {
+                anyStuck = true;
+                break;
+            }
+        }
+        if (!anyStuck) {
+            m_stuckOverlayFrameCounts.erase(ss);
+            continue;
+        }
+
+        uint32_t& staleFrames = m_stuckOverlayFrameCounts[ss];
+        ++staleFrames;
+        if (staleFrames < staleFrameThreshold) {
+            continue;
+        }
+
+        for (int slot = 0; slot < kMaxOverlays; ++slot) {
+            if (!overlaySlotActiveButInvalid(ss, slot)) {
+                continue;
+            }
+            ss->removeTextureAttribute(slot, osg::StateAttribute::TEXTURE);
+            if (auto* u = ss->getUniform("u_overlayActive")) {
+                u->setElement(slot, 0);
+            }
+            ++clearedSlots;
+        }
+        m_stuckOverlayFrameCounts.erase(ss);
+    }
+    return clearedSlots;
+}
+
+size_t HyperTerrainPrepareRendererResources::aliveHandleCount() const
+{
+    std::lock_guard<std::mutex> lock(m_storeMutex);
+    size_t count = 0;
+    for (const TileRenderRecord& record : m_store) {
+        if (record.alive) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+size_t HyperTerrainPrepareRendererResources::rasterAttachmentCount() const
+{
+    std::lock_guard<std::mutex> lock(m_overlayMutex);
+    return m_rasterAttachments.size();
 }
 
 } // namespace Cesium

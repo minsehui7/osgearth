@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <sstream>
 #include <vector>
 
 using namespace osgEarth::Cesium;
@@ -41,6 +42,14 @@ namespace {
 
 // Match CesiumLayer default and CesiumTilesetNode server key (CesiumIon::getContext map).
 constexpr const char* kDefaultCesiumIonServer = "https://api.cesium.com/";
+
+constexpr size_t kPruneChildMargin = 32;
+constexpr int kPruneRateLimitFrames = 30;
+constexpr int kDiagLogIntervalFrames = 300;
+constexpr uint32_t kStuckOverlayFrameThreshold = 180;
+constexpr int kDrainMaxPassesMeshPending = 12;
+constexpr int kDrainMaxPassesImageryPending = 3;
+constexpr int kDrainStalePassLimit = 2;
 
 using Cesium3DTilesSelection::Tile;
 using Cesium3DTilesSelection::TileID;
@@ -200,6 +209,7 @@ struct TileSelectionStats {
     size_t selectedCount = 0;
     size_t renderContentCount = 0;
     size_t renderReadyCount = 0;
+    size_t pendingImageryCount = 0;
 };
 
 TileSelectionStats countTerrainTileSelection(
@@ -221,7 +231,12 @@ TileSelectionStats countTerrainTileSelection(
         if (!renderer->tryResolveTileRenderData(*tilePtr, renderData) || !renderData.xform.valid()) {
             continue;
         }
-        if (requireImageryForDisplay && !renderer->tileImageryReadyForDisplay(*tilePtr)) {
+        const bool imageryReady =
+            !requireImageryForDisplay || renderer->tileImageryReadyForDisplay(*tilePtr);
+        if (!imageryReady) {
+            ++stats.pendingImageryCount;
+        }
+        if (requireImageryForDisplay && !imageryReady) {
             continue;
         }
         ++stats.renderReadyCount;
@@ -295,17 +310,42 @@ void drainMainThreadUntilDrawable(
     const std::vector<Tile::ConstPointer>& tilesToRender,
     const HyperTerrainPrepareRendererResources* renderer,
     bool requireImageryForDisplay,
-    TileSelectionStats& stats)
+    TileSelectionStats& stats,
+    int& outPassesUsed)
 {
+    outPassesUsed = 0;
     if (!tileset) {
         return;
     }
 
-    for (int pass = 0; pass < 12 && stats.selectedCount > 0 && stats.renderReadyCount == 0; ++pass) {
+    int stalePasses = 0;
+    size_t prevContent = stats.renderContentCount;
+    size_t prevReady = stats.renderReadyCount;
+
+    const int maxPasses =
+        (requireImageryForDisplay && stats.renderContentCount > 0 && stats.renderReadyCount == 0)
+            ? kDrainMaxPassesImageryPending
+            : kDrainMaxPassesMeshPending;
+
+    for (int pass = 0; pass < maxPasses && stats.selectedCount > 0 && stats.renderReadyCount == 0;
+         ++pass) {
+        ++outPassesUsed;
         tileset->getAsyncSystem().dispatchMainThreadTasks();
         stats = countTerrainTileSelection(tilesToRender, renderer, requireImageryForDisplay);
         if (stats.renderContentCount == 0 || stats.renderReadyCount > 0) {
             break;
+        }
+        if (requireImageryForDisplay && stats.pendingImageryCount >= stats.renderContentCount) {
+            break;
+        }
+        if (stats.renderContentCount == prevContent && stats.renderReadyCount == prevReady) {
+            if (++stalePasses >= kDrainStalePassLimit) {
+                break;
+            }
+        } else {
+            stalePasses = 0;
+            prevContent = stats.renderContentCount;
+            prevReady = stats.renderReadyCount;
         }
     }
 }
@@ -324,6 +364,10 @@ struct HyperTerrainBridge::Impl {
     double fallbackRebuildBudgetCredit = 0.0;
     int primaryStuckImplicitRootFrames = 0;
     int fallbackStuckImplicitRootFrames = 0;
+    int pruneCooldownFrames = 0;
+    int diagFrameCounter = 0;
+    int primaryDrainPassesLastFrame = 0;
+    int fallbackDrainPassesLastFrame = 0;
     /// App-registered TMS overlays (Mapbox/VWorld/Naver/OWM); when zero, show mesh without imagery gate.
     int registeredImageryOverlayCount = 0;
     /// While true, user 3D Tiles layers defer cull/update and drape work for terrain priority.
@@ -551,9 +595,11 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
         primaryResult.tilesToRenderThisFrame,
         renderer,
         requireImageryForDisplay,
-        primaryStats);
+        primaryStats,
+        _impl->primaryDrainPassesLastFrame);
 
     TileSelectionStats fallbackStats;
+    _impl->fallbackDrainPassesLastFrame = 0;
     if (fallbackResult.has_value()) {
         fallbackStats = countTerrainTileSelection(
             fallbackResult->tilesToRenderThisFrame, renderer, requireImageryForDisplay);
@@ -567,20 +613,65 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
             fallbackResult->tilesToRenderThisFrame,
             renderer,
             requireImageryForDisplay,
-            fallbackStats);
+            fallbackStats,
+            _impl->fallbackDrainPassesLastFrame);
+    }
+
+    if (_impl->renderer) {
+        _impl->renderer->recoverStuckOverlayUniforms(kStuckOverlayFrameThreshold);
+
+        const size_t selectedCountForPrune =
+            primaryStats.selectedCount + fallbackStats.selectedCount;
+        if (osg::Group* const tileGroup = _impl->tileGroup.get()) {
+            const unsigned sceneChildren = tileGroup->getNumChildren();
+            if (sceneChildren > selectedCountForPrune + kPruneChildMargin) {
+                if (_impl->pruneCooldownFrames <= 0) {
+                    _impl->renderer->pruneSceneNodesWithoutHandles();
+                    _impl->pruneCooldownFrames = kPruneRateLimitFrames;
+                } else {
+                    --_impl->pruneCooldownFrames;
+                }
+            } else if (_impl->pruneCooldownFrames > 0) {
+                --_impl->pruneCooldownFrames;
+            }
+        }
     }
 
     const size_t selectedCount = primaryStats.selectedCount + fallbackStats.selectedCount;
+    const size_t renderContentCount =
+        primaryStats.renderContentCount + fallbackStats.renderContentCount;
     const size_t renderReadyCount = primaryStats.renderReadyCount + fallbackStats.renderReadyCount;
 
-    // Block user 3D Tiles until at least one terrain tile can be shown (mesh + imagery when required).
-    // Do not treat every not-yet-imagery tile in the selection set as blocking — that kept defer on forever.
-    const bool activelyLoading = renderReadyCount == 0 && selectedCount > 0;
+    // Defer user 3D Tiles until at least one selected tile has mesh content on the main thread.
+    // Imagery readiness is enforced only for OSG display (tryShowTile); do not block the whole
+    // app on TMS/imagery or profile elevation sampling stalls when mesh already exists.
+    const bool activelyLoading = renderContentCount == 0 && selectedCount > 0;
 
     updateDeferUserTilesetsState(
         activelyLoading, _impl->deferUserTilesets, _impl->terrainStableFrames);
     applyUserTilesetLoadDeferPolicy(_impl->deferUserTilesets);
     setHyperTerrainLoadingActive(_impl->deferUserTilesets);
+
+    if (_impl->renderer &&
+        (getLogTerrainRequest() || getLogTmsRequest()) &&
+        ++_impl->diagFrameCounter >= kDiagLogIntervalFrames) {
+        _impl->diagFrameCounter = 0;
+        const unsigned sceneChildren = _impl->tileGroup.valid()
+            ? _impl->tileGroup->getNumChildren()
+            : 0u;
+        std::ostringstream oss;
+        oss << "[HyperTerrain] diag sceneChildren=" << sceneChildren
+            << " aliveHandles=" << _impl->renderer->aliveHandleCount()
+            << " rasterAttachments=" << _impl->renderer->rasterAttachmentCount()
+            << " selected=" << selectedCount
+            << " renderContent=" << (primaryStats.renderContentCount + fallbackStats.renderContentCount)
+            << " pendingImagery="
+            << (primaryStats.pendingImageryCount + fallbackStats.pendingImageryCount)
+            << " renderReady=" << renderReadyCount
+            << " drainPasses="
+            << (_impl->primaryDrainPassesLastFrame + _impl->fallbackDrainPassesLastFrame);
+        OSG_NOTICE << oss.str() << std::endl;
+    }
 
     // Hide every OSG tile under _tileGroup; tryShowTile re-enables the current selection only.
     // Full sweep (not lastVisible diff) so tiles skipped by ion/dual/imagery gates cannot zombie-draw.
