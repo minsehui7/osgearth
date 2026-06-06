@@ -279,15 +279,15 @@ HyperTerrainImageryFactory::createBingMapsAerial(const std::string& ionAccessTok
 // Web Mercator (EPSG:3857), 레벨 0~22, x/y 표준 XYZ 순서
 
 IntrusivePointer<RasterOverlay>
-HyperTerrainImageryFactory::createMapboxSatellite()
+HyperTerrainImageryFactory::createMapboxSatellite(const std::string& accessToken)
 {
-    static const std::string kToken =
-        "pk.eyJ1IjoidGVycmlhLW1hcGJveCIsImEiOiJjbWI2NjVmMTEwdHBrMmxxNGM3MWgxaWNuIn0"
-        ".DSkYfAoa2rJi-vczWFBpcg";
+    if (accessToken.empty()) {
+        return nullptr;
+    }
 
     const std::string url =
         "https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/256/{z}/{x}/{reverseY}"
-        "?access_token=" + kToken;
+        "?access_token=" + accessToken;
 
     UrlTemplateRasterOverlayOptions opts;
     opts.minimumLevel = 0;

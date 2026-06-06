@@ -37,7 +37,7 @@ public:
     static RasterOverlayPtr createVWorldLabel();
     static RasterOverlayPtr createVWorldGray(const std::string& apiKey);
     static RasterOverlayPtr createVWorldMidnight(const std::string& apiKey);
-    static RasterOverlayPtr createMapboxSatellite();
+    static RasterOverlayPtr createMapboxSatellite(const std::string& accessToken);
     static RasterOverlayPtr createBingMapsAerial(const std::string& ionAccessToken);
     static RasterOverlayPtr createNaverSatellite();
     static RasterOverlayPtr createOwmClouds(const std::string& apiKey);
