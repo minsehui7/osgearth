@@ -280,6 +280,7 @@ _terrainAvoidanceEnabled        ( true ),
 _terrainAvoidanceMinDistance    ( 1.0 ),
 _throwingEnabled                ( false ),
 _throwDecayRate                 ( 0.175 ),
+_throwStopRatio                 ( 0.01 ),
 _zoomToMouse                    ( true )
 {
     //NOP
@@ -312,6 +313,7 @@ _terrainAvoidanceEnabled( rhs._terrainAvoidanceEnabled ),
 _terrainAvoidanceMinDistance( rhs._terrainAvoidanceMinDistance ),
 _throwingEnabled( rhs._throwingEnabled ),
 _throwDecayRate( rhs._throwDecayRate ),
+_throwStopRatio( rhs._throwStopRatio ),
 _zoomToMouse( rhs._zoomToMouse )
 {
     //NOP
@@ -1628,9 +1630,18 @@ EarthManipulator::handle(const osgGA::GUIEventAdapter& ea, osgGA::GUIActionAdapt
             if (_thrown)
             {
                 double decayFactor = 1.0 - _settings->getThrowDecayRate();
+                const double stopRatio = _settings->getThrowStopRatio();
+                // stopRatio==0: decay-only stop at a tiny absolute velocity (not "never stop").
+                constexpr double kDecayOnlyStopVelocity = 1e-6;
+                const double stopDx = stopRatio > 0.0
+                    ? std::abs(_dx * stopRatio)
+                    : kDecayOnlyStopVelocity;
+                const double stopDy = stopRatio > 0.0
+                    ? std::abs(_dy * stopRatio)
+                    : kDecayOnlyStopVelocity;
 
-                _throw_dx = std::abs(_throw_dx) > std::abs(_dx * 0.01) ? _throw_dx * decayFactor : 0.0;
-                _throw_dy = std::abs(_throw_dy) > std::abs(_dy * 0.01) ? _throw_dy * decayFactor : 0.0;
+                _throw_dx = std::abs(_throw_dx) > stopDx ? _throw_dx * decayFactor : 0.0;
+                _throw_dy = std::abs(_throw_dy) > stopDy ? _throw_dy * decayFactor : 0.0;
 
                 if (_throw_dx == 0.0 && _throw_dy == 0.0)
                     _thrown = false;
@@ -3333,15 +3344,22 @@ EarthManipulator::setHomeViewpoint( const Viewpoint& vp, double duration_s )
 void
 EarthManipulator::drag(double dx, double dy, osg::View* theView)
 {
-    static_cast<void>(dx);
-    static_cast<void>(dy);
-
     osgViewer::View* view = dynamic_cast<osgViewer::View*>(theView);
     if (!view || !_ga_t0.valid() || !_ga_t1.valid())
         return;
 
     const float x0 = _ga_t1->getX(), y0 = _ga_t1->getY();
-    const float x1 = _ga_t0->getX(), y1 = _ga_t0->getY();
+    float x1 = _ga_t0->getX(), y1 = _ga_t0->getY();
+
+    // Throwing passes decayed (dx,dy); scale the frozen mouse delta to match. Without this,
+    // inertia replays the full last drag every frame (ACTION_EARTH_DRAG ignores dx/dy).
+    if (_dx != 0.0 || _dy != 0.0)
+    {
+        const double scaleX = (_dx != 0.0) ? (dx / _dx) : 0.0;
+        const double scaleY = (_dy != 0.0) ? (dy / _dy) : 0.0;
+        x1 = x0 + (x1 - x0) * static_cast<float>(scaleX);
+        y1 = y0 + (y1 - y0) * static_cast<float>(scaleY);
+    }
 
     osg::Vec3d worldStartDrag, worldEndDrag;
 

@@ -38,6 +38,13 @@ namespace osgEarth {
         OSGEARTHCESIUM_EXPORT void setMaximumSimultaneousTmsLoads(uint32_t value);
         OSGEARTHCESIUM_EXPORT uint32_t getMaximumSimultaneousTmsLoads();
 
+        /// TilesetOptions::maximumCachedBytes for HyperTerrain tilesets (default 32MB).
+        /// cesium-native only counts raw tile payload (~44KB/tile quantized-mesh) while the
+        /// real GPU+RAM cost per cached tile (TMS textures + OSG geometry) is ~20x larger,
+        /// so this must stay far below the cesium-native default (512MB) to bound VRAM.
+        OSGEARTHCESIUM_EXPORT void setTerrainMaximumCachedBytes(int64_t bytes);
+        OSGEARTHCESIUM_EXPORT int64_t getTerrainMaximumCachedBytes();
+
         /// Signal in-flight async tile loads to bail out. Cheap atomic; safe from any thread.
         OSGEARTHCESIUM_EXPORT void requestShutdown();
         OSGEARTHCESIUM_EXPORT bool isShuttingDown();

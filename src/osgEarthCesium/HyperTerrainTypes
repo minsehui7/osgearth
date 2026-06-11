@@ -45,6 +45,9 @@ struct OSGEARTHCESIUM_EXPORT HyperTerrainViewParams {
     double hFovRad{0.698132};
     double vFovRad{0.698132};
     bool hasCameraData{false};
+    /// 2D ortho: eye-to-focal-plane distance (m) from the app manipulator. Anchors the
+    /// perspective stand-in FOV (2*atan(orthoHalfExtent/R)). 0 = unknown (3D mode).
+    double orthoFocalDistanceM{0.0};
 };
 
 struct OSGEARTHCESIUM_EXPORT HyperTerrainInitOptions {

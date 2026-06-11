@@ -480,6 +480,11 @@ namespace osgEarth { namespace Util
             double getThrowDecayRate () const { return _throwDecayRate; }
             double& throwDecayRate() { return _throwDecayRate; }
 
+            /** Throwing stops when |velocity| falls below this fraction of the last drag delta (0 = decay-only, tiny epsilon). */
+            void setThrowStopRatio(double throwStopRatio) { _throwStopRatio = osg::clampBetween(throwStopRatio, 0.0, 1.0); }
+            double getThrowStopRatio() const { return _throwStopRatio; }
+            double& throwStopRatio() { return _throwStopRatio; }
+
             void setZoomToMouse(bool value) { _zoomToMouse = value; }
             bool getZoomToMouse() const { return _zoomToMouse; }
             bool& zoomToMouse() { return _zoomToMouse; }
@@ -529,6 +534,7 @@ namespace osgEarth { namespace Util
 
             bool _throwingEnabled;
             double _throwDecayRate;
+            double _throwStopRatio;
 
             bool _zoomToMouse;
         };

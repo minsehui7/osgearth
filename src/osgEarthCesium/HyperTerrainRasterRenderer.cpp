@@ -154,8 +154,12 @@ void* HyperTerrainRasterRenderer::prepareRasterInMainThread(
     osgImage->allocateImage(width, height, 1, pixelFmt, dataType);
     std::memcpy(osgImage->data(), uploadPtr, outBytes);
     osgImage->flipVertical(); // Cesium 픽셀 좌표 → OSG 픽셀 좌표
+    // STATIC + unRefImageDataAfterApply: GL 업로드 후 CPU측 사본 해제 (타일당 수백 KB,
+    // 누적 수천 장이면 수백 MB). 업로드 후 텍스처 유효성은 getTextureWidth()로 판정한다.
+    osgImage->setDataVariance(osg::Object::STATIC);
 
     auto* tex = new osg::Texture2D(osgImage);
+    tex->setUnRefImageDataAfterApply(true);
     tex->setResizeNonPowerOfTwoHint(false);
     tex->setInternalFormatMode(osg::Texture::USE_USER_DEFINED_FORMAT);
     if (pixelFmt == GL_RGBA) {
@@ -187,7 +191,10 @@ void HyperTerrainRasterRenderer::freeRaster(
     }
     if (pMainThreadResult) {
         auto* tex = static_cast<osg::Texture2D*>(pMainThreadResult);
-        tex->unref_nodelete();
+        // prepareRasterInMainThread의 ref()와 짝. detach가 free보다 먼저 오므로 보통 여기가
+        // 마지막 참조다 — unref_nodelete()는 Texture2D+Image+GL 텍스처를 영구 누수시킨다.
+        // unref()는 마지막 참조에서 삭제하고, GL 핸들은 OSG orphan list로 드로우 시 반환된다.
+        tex->unref();
     }
 }
 

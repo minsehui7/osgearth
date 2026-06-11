@@ -242,7 +242,12 @@ bool overlaySlotHasValidTexture(osg::StateSet* ss, int slot)
         return false;
     }
     const osg::Image* image = tex->getImage();
-    return image && image->valid() && image->s() > 0 && image->t() > 0;
+    if (image && image->valid() && image->s() > 0 && image->t() > 0) {
+        return true;
+    }
+    // unRefImageDataAfterApply releases the CPU image after GL upload; the texture is
+    // still valid then and its dimensions (set at apply time) prove the upload happened.
+    return tex->getTextureWidth() > 0 && tex->getTextureHeight() > 0;
 }
 
 bool stateSetHasValidOverlayImagery(osg::StateSet* ss)

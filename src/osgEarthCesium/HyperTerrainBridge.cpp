@@ -31,6 +31,7 @@
 #include <glm/glm.hpp>
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 #include <optional>
 #include <sstream>
@@ -255,6 +256,9 @@ void applyMainThreadRebuildBudget(
     }
 
     Cesium3DTilesSelection::TilesetOptions& options = tileset->getOptions();
+    // Re-applied per frame so runtime settings changes take effect; eviction work itself is
+    // bounded by cesium-native's tileCacheUnloadTimeLimit and skips tiles selected this frame.
+    options.maximumCachedBytes = getTerrainMaximumCachedBytes();
     const double rate = terrainRebuildsPerFrameRate();
     if (rate <= 0.0) {
         options.mainThreadLoadingTimeLimit = 0.0;
@@ -276,34 +280,37 @@ void maybeRelaxImplicitRootStuckSse(
     Cesium3DTilesSelection::Tileset* tileset,
     const std::vector<Tile::ConstPointer>& tilesToRender,
     size_t renderContentCount,
+    double configuredMaximumScreenSpaceError,
     int& stuckImplicitRootFrames)
 {
     if (!tileset) {
         return;
     }
 
-    const size_t selectedCount = tilesToRender.size();
-    if (selectedCount != 1 || renderContentCount != 0) {
-        return;
-    }
-
-    const Tile::ConstPointer& onlyTile = tilesToRender.front();
-    if (!onlyTile) {
-        return;
-    }
-
-    const TileID& tileId = onlyTile->getTileID();
-    if (const auto* quadId = std::get_if<QuadtreeTileID>(&tileId)) {
-        if (quadId->level == 0) {
-            if (++stuckImplicitRootFrames >= 6) {
-                Cesium3DTilesSelection::TilesetOptions& opts = tileset->getOptions();
-                const float prev = opts.maximumScreenSpaceError;
-                opts.maximumScreenSpaceError = std::max(1.0f, prev * 0.5f);
-                stuckImplicitRootFrames = 0;
-            }
-        } else {
-            stuckImplicitRootFrames = 0;
+    bool stuckOnBlankRoot = false;
+    if (tilesToRender.size() == 1 && renderContentCount == 0 && tilesToRender.front()) {
+        const TileID& tileId = tilesToRender.front()->getTileID();
+        if (const auto* quadId = std::get_if<QuadtreeTileID>(&tileId)) {
+            stuckOnBlankRoot = (quadId->level == 0);
         }
+    }
+
+    Cesium3DTilesSelection::TilesetOptions& opts = tileset->getOptions();
+
+    if (!stuckOnBlankRoot) {
+        stuckImplicitRootFrames = 0;
+        // 비상 완화(SSE 반감)가 세션 내내 남으면 이후 모든 뷰에서 선택 LOD가 수 단계 깊어져
+        // 줌 아웃 시 로드 큐가 사실상 무한이 된다(장시간 세션 후 신규 타일 블랙 현상).
+        // 루트 stuck이 풀리는 즉시 설정값으로 복원해 비상 경로를 일시적으로만 유지한다.
+        if (opts.maximumScreenSpaceError != configuredMaximumScreenSpaceError) {
+            opts.maximumScreenSpaceError = configuredMaximumScreenSpaceError;
+        }
+        return;
+    }
+
+    if (++stuckImplicitRootFrames >= 6) {
+        opts.maximumScreenSpaceError = std::max(1.0, opts.maximumScreenSpaceError * 0.5);
+        stuckImplicitRootFrames = 0;
     }
 }
 
@@ -418,6 +425,14 @@ size_t sceneChildTargetMax(const size_t selectedCount)
     return selectedCount + kPruneChildMargin + kLruExtraKeepMargin;
 }
 
+void emitHyperTerrainPerfDiag(const std::string& line)
+{
+    // stderr: visible in VS Output / console regardless of Qt Log dock or osg notify level.
+    std::fputs(line.c_str(), stderr);
+    std::fputc('\n', stderr);
+    std::fflush(stderr);
+}
+
 } // namespace
 
 struct HyperTerrainBridge::Impl {
@@ -428,6 +443,8 @@ struct HyperTerrainBridge::Impl {
     std::shared_ptr<PrimaryCoverageFallbackExcluder> fallbackExcluder;
     Context* context{nullptr};
     int32_t cesiumIonTerrainAlwaysOnLevelMax{-1};
+    /// Init-time SSE; maybeRelaxImplicitRootStuckSse restores to this once the root unsticks.
+    double configuredMaximumScreenSpaceError = 16.0;
     double primaryRebuildBudgetCredit = 0.0;
     double fallbackRebuildBudgetCredit = 0.0;
     int primaryStuckImplicitRootFrames = 0;
@@ -481,6 +498,8 @@ bool HyperTerrainBridge::initialize(const HyperTerrainInitOptions& options)
 
     Cesium3DTilesSelection::TilesetOptions tilesetOptions;
     tilesetOptions.maximumScreenSpaceError = options.maximumScreenSpaceError;
+    tilesetOptions.maximumCachedBytes = getTerrainMaximumCachedBytes();
+    _impl->configuredMaximumScreenSpaceError = options.maximumScreenSpaceError;
 
     _impl->primaryTileset.reset();
     _impl->fallbackTileset.reset();
@@ -659,6 +678,7 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
         _impl->primaryTileset.get(),
         primaryResult.tilesToRenderThisFrame,
         primaryStats.renderContentCount,
+        _impl->configuredMaximumScreenSpaceError,
         _impl->primaryStuckImplicitRootFrames);
     drainMainThreadUntilDrawable(
         _impl->primaryTileset.get(),
@@ -677,6 +697,7 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
             _impl->fallbackTileset.get(),
             fallbackResult->tilesToRenderThisFrame,
             fallbackStats.renderContentCount,
+            _impl->configuredMaximumScreenSpaceError,
             _impl->fallbackStuckImplicitRootFrames);
         drainMainThreadUntilDrawable(
             _impl->fallbackTileset.get(),
@@ -852,6 +873,12 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
         const uint32_t mainThreadBudget = _impl->primaryTileset
             ? _impl->primaryTileset->getOptions().maximumMainThreadTilesPerLoadPass
             : 0u;
+        const double primaryMaxSse = _impl->primaryTileset
+            ? _impl->primaryTileset->getOptions().maximumScreenSpaceError
+            : 0.0;
+        const double fallbackMaxSse = _impl->fallbackTileset
+            ? _impl->fallbackTileset->getOptions().maximumScreenSpaceError
+            : 0.0;
         std::ostringstream oss;
         oss << "[HyperTerrain] perf sceneChildren=" << sceneChildren
             << " targetMax=" << sceneChildTargetMax(selectedCount)
@@ -867,13 +894,14 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
             << (_impl->primaryDrainPassesLastFrame + _impl->fallbackDrainPassesLastFrame)
             << " terrainRebuildRate=" << terrainRebuildsPerFrameRate()
             << " mainThreadBudget=" << mainThreadBudget
+            << " maxSse=" << primaryMaxSse << "/" << fallbackMaxSse
             << " deferUserTilesets=" << (_impl->deferUserTilesets ? 1 : 0)
             << " activelyLoading=" << (activelyLoading ? 1 : 0)
             << " prunedOrphans=" << prunedOrphans
             << " detachedStale=" << detachedStale
             << " overlayRecovered=" << overlayRecovered
             << " finalizedOverlays=" << finalizedOverlays;
-        OSG_NOTICE << oss.str() << std::endl;
+        emitHyperTerrainPerfDiag(oss.str());
     }
 }
 

@@ -29,6 +29,7 @@ static osgEarth::Cesium::TileRebuildsPerFrameFn s_terrainRebuildsPerFrameProvide
 static std::atomic<bool> s_hyperTerrainLoadingActive{true};
 static std::atomic<double> s_userTilesetRebuildScaleWhileTerrainLoads{0.05};
 static std::atomic<uint32_t> s_maximumSimultaneousTmsLoads{20};
+static std::atomic<int64_t> s_terrainMaximumCachedBytes{32LL * 1024 * 1024};
 
 namespace
 {
@@ -110,6 +111,16 @@ void osgEarth::Cesium::setMaximumSimultaneousTmsLoads(uint32_t value)
 uint32_t osgEarth::Cesium::getMaximumSimultaneousTmsLoads()
 {
     return s_maximumSimultaneousTmsLoads.load(std::memory_order_relaxed);
+}
+
+void osgEarth::Cesium::setTerrainMaximumCachedBytes(int64_t bytes)
+{
+    s_terrainMaximumCachedBytes.store(std::max<int64_t>(0, bytes), std::memory_order_relaxed);
+}
+
+int64_t osgEarth::Cesium::getTerrainMaximumCachedBytes()
+{
+    return s_terrainMaximumCachedBytes.load(std::memory_order_relaxed);
 }
 
 void osgEarth::Cesium::requestShutdown()
