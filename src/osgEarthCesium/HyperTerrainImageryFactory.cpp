@@ -111,6 +111,16 @@ bool isImageryTilesetLogMessage(std::string_view text)
         return true;
     }
 
+    if (containsIgnoreCase(text, "req/wmts")
+        || containsIgnoreCase(text, "api.vworld")
+        || containsIgnoreCase(text, "xdworld.vworld")
+        || containsIgnoreCase(text, "mapbox.com")
+        || containsIgnoreCase(text, "map.pstatic")
+        || containsIgnoreCase(text, "openweathermap"))
+    {
+        return true;
+    }
+
     if (containsIgnoreCase(text, "response code")
         && (containsIgnoreCase(text, ".png")
             || containsIgnoreCase(text, ".jpg")
@@ -279,47 +289,83 @@ std::shared_ptr<spdlog::logger> HyperTerrainImageryFactory::getOrCreateTilesetLo
     return s_tilesetLogger;
 }
 
+std::string HyperTerrainImageryFactory::normalizeVWorldApiKey(std::string apiKey)
+{
+    for (char& c : apiKey) {
+        if (c == '%')
+            c = '-';
+    }
+    const auto notSpace = [](unsigned char c) { return !std::isspace(c); };
+    apiKey.erase(apiKey.begin(), std::find_if(apiKey.begin(), apiKey.end(), notSpace));
+    apiKey.erase(std::find_if(apiKey.rbegin(), apiKey.rend(), notSpace).base(), apiKey.end());
+    return apiKey;
+}
+
 // ---- VWorld ----
 
-IntrusivePointer<RasterOverlay>
-HyperTerrainImageryFactory::createVWorldStreet(const std::string& apiKey)
+IntrusivePointer<RasterOverlay> makeVWorldWmtsOverlay(
+    const char* overlayName,
+    const std::string& apiKey,
+    std::string url)
 {
-    // VWorld TMS - Base (도로) 타일
-    // URL 패턴: https://api.vworld.kr/req/wmts/1.0.0/{apiKey}/Base/{z}/{y}/{x}.png
-    std::string url =
-        "https://api.vworld.kr/req/wmts/1.0.0/" + apiKey +
-        "/Base/{z}/{reverseY}/{x}.png";
+    if (apiKey.empty()) {
+        spdlog::warn(
+            "{}: empty API key (ExternalService/vworldApiKey or VWORLD_API_KEY)",
+            overlayName);
+        return nullptr;
+    }
 
     UrlTemplateRasterOverlayOptions opts;
     applyVworldRegionalOverlayOptions(opts);
 
-    return new UrlTemplateRasterOverlay("VWorldStreet", url, {}, opts, currentRasterOverlayOpts());
+    return new UrlTemplateRasterOverlay(
+        overlayName,
+        std::move(url),
+        {},
+        opts,
+        currentRasterOverlayOpts());
+}
+
+IntrusivePointer<RasterOverlay> makeVWorldXdworldOverlay(
+    const char* overlayName,
+    std::string url)
+{
+    UrlTemplateRasterOverlayOptions opts;
+    applyVworldRegionalOverlayOptions(opts);
+
+    return new UrlTemplateRasterOverlay(
+        overlayName,
+        std::move(url),
+        {},
+        opts,
+        currentRasterOverlayOpts());
 }
 
 IntrusivePointer<RasterOverlay>
-HyperTerrainImageryFactory::createVWorldSatellite(const std::string& apiKey)
+HyperTerrainImageryFactory::createVWorldStreet(const std::string& /*apiKey*/)
 {
-    std::string url =
-        "https://api.vworld.kr/req/wmts/1.0.0/" + apiKey +
-        "/Satellite/{z}/{reverseY}/{x}.jpeg";
+    // xdworld open 2D Base — no API key (WMTS Base needs a registered vworld.kr key).
+    const std::string url =
+        "https://xdworld.vworld.kr/2d/Base/service/{z}/{x}/{reverseY}.png";
+    return makeVWorldXdworldOverlay("VWorldStreet", url);
+}
 
-    UrlTemplateRasterOverlayOptions opts;
-    applyVworldRegionalOverlayOptions(opts);
-
-    return new UrlTemplateRasterOverlay("VWorldSatellite", url, {}, opts, currentRasterOverlayOpts());
+IntrusivePointer<RasterOverlay>
+HyperTerrainImageryFactory::createVWorldSatellite(const std::string& /*apiKey*/)
+{
+    const std::string url =
+        "https://xdworld.vworld.kr/2d/Satellite/service/{z}/{x}/{reverseY}.jpeg";
+    return makeVWorldXdworldOverlay("VWorldSatellite", url);
 }
 
 IntrusivePointer<RasterOverlay>
 HyperTerrainImageryFactory::createVWorldHybridOverlay(const std::string& apiKey)
 {
-    std::string url =
-        "https://api.vworld.kr/req/wmts/1.0.0/" + apiKey +
-        "/Hybrid/{z}/{reverseY}/{x}.png";
-
-    UrlTemplateRasterOverlayOptions opts;
-    applyVworldRegionalOverlayOptions(opts);
-
-    return new UrlTemplateRasterOverlay("VWorldHybrid", url, {}, opts, currentRasterOverlayOpts());
+    const std::string key = normalizeVWorldApiKey(apiKey);
+    const std::string url =
+        "https://api.vworld.kr/req/wmts/1.0.0/" + key
+        + "/Hybrid/{z}/{reverseY}/{x}.png";
+    return makeVWorldWmtsOverlay("VWorldHybrid", key, url);
 }
 
 IntrusivePointer<RasterOverlay>
@@ -339,27 +385,21 @@ HyperTerrainImageryFactory::createVWorldLabel()
 IntrusivePointer<RasterOverlay>
 HyperTerrainImageryFactory::createVWorldGray(const std::string& apiKey)
 {
-    std::string url =
-        "https://api.vworld.kr/req/wmts/1.0.0/" + apiKey +
-        "/gray/{z}/{reverseY}/{x}.png";
-
-    UrlTemplateRasterOverlayOptions opts;
-    applyVworldRegionalOverlayOptions(opts);
-
-    return new UrlTemplateRasterOverlay("VWorldGray", url, {}, opts, currentRasterOverlayOpts());
+    const std::string key = normalizeVWorldApiKey(apiKey);
+    const std::string url =
+        "https://api.vworld.kr/req/wmts/1.0.0/" + key
+        + "/gray/{z}/{reverseY}/{x}.png";
+    return makeVWorldWmtsOverlay("VWorldGray", key, url);
 }
 
 IntrusivePointer<RasterOverlay>
 HyperTerrainImageryFactory::createVWorldMidnight(const std::string& apiKey)
 {
-    std::string url =
-        "https://api.vworld.kr/req/wmts/1.0.0/" + apiKey +
-        "/midnight/{z}/{reverseY}/{x}.png";
-
-    UrlTemplateRasterOverlayOptions opts;
-    applyVworldRegionalOverlayOptions(opts);
-
-    return new UrlTemplateRasterOverlay("VWorldMidnight", url, {}, opts, currentRasterOverlayOpts());
+    const std::string key = normalizeVWorldApiKey(apiKey);
+    const std::string url =
+        "https://api.vworld.kr/req/wmts/1.0.0/" + key
+        + "/midnight/{z}/{reverseY}/{x}.png";
+    return makeVWorldWmtsOverlay("VWorldMidnight", key, url);
 }
 
 // ---- Bing Maps via Ion ----

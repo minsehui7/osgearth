@@ -41,6 +41,9 @@ public:
     void setTmsImageryExposure(float exposure);
     void setTerrainBaseColor(const osg::Vec3f& rgb);
 
+    /// Re-run raster overlay mapping on loaded terrain tiles (after overlay add/remove).
+    void refreshLoadedTileRasterOverlays();
+
     bool hasPrimaryTileset() const;
 
 private:

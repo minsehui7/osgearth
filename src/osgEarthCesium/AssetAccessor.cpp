@@ -108,7 +108,28 @@ bool isLikelyRasterImageryUrl(const std::string& url)
         || lower.find(".jpeg") != std::string::npos
         || lower.find(".webp") != std::string::npos
         || lower.find("/wmts/") != std::string::npos
-        || lower.find("req/wmts") != std::string::npos;
+        || lower.find("req/wmts") != std::string::npos
+        || lower.find("xdworld.vworld") != std::string::npos;
+}
+
+bool extractVWorldOwsException(const std::string& content, std::string& outMessage)
+{
+    if (content.size() < 20
+        || content.compare(0, 5, "<?xml") != 0
+        || content.find("ExceptionReport") == std::string::npos)
+    {
+        return false;
+    }
+
+    constexpr const char* kTag = "<ExceptionText><![CDATA[";
+    const auto pos = content.find(kTag);
+    if (pos != std::string::npos) {
+        const auto start = pos + std::strlen(kTag);
+        const auto end = content.find("]]>", start);
+        if (end != std::string::npos)
+            outMessage = content.substr(start, end - start);
+    }
+    return true;
 }
 
 bool is3DTilesRequestUrl(const std::string& url)
@@ -178,6 +199,22 @@ void log3DTilesHttpLine(const char *verb, int statusCode, const std::string &url
     } else {
         std::fprintf(stderr, "%s [3DTiles] %d %s\n", stamp, statusCode, url.c_str());
     }
+}
+
+void logTmsImageryHttpLine(int statusCode, const std::string& url, std::size_t contentBytes)
+{
+    if (!osgEarth::Cesium::getLogTmsRequest() || !isLikelyRasterImageryUrl(url))
+        return;
+    char stamp[48];
+    writeElapsedStamp(stamp, sizeof(stamp));
+    std::fprintf(
+        stderr,
+        "%s [TMS] %d %s (bytes=%zu)\n",
+        stamp,
+        statusCode,
+        url.c_str(),
+        contentBytes);
+    std::fflush(stderr);
 }
 
 void maybeLog3DTilesHttpLine(const char* verb, int statusCode, const std::string& url)
@@ -400,12 +437,36 @@ AssetAccessor::get(const CesiumAsync::AsyncSystem& asyncSystem,
                     }
                     response->_result = std::move(result);
                 }
+
+                std::string owsError;
+                if (response->_statusCode == 200
+                    && extractVWorldOwsException(content, owsError))
+                {
+                    response->_statusCode = 403;
+                    OE_WARN << LC << "VWorld WMTS rejected tile"
+                            << " url=" << url;
+                    if (!owsError.empty())
+                        OE_WARN << " message=" << owsError;
+                    OE_WARN << std::endl;
+                }
+
+                const uint16_t imageryStatusCode = response->_statusCode;
+                const std::size_t imageryBytes = response->_result.size();
+                const bool logImagery = isLikelyRasterImageryUrl(url);
+
                 request->setResponse(std::move(response));
 
                 maybeLog3DTilesHttpLine(
                     nullptr,
                     static_cast<int>(request->_response->_statusCode),
                     url);
+
+                if (logImagery) {
+                    logTmsImageryHttpLine(
+                        static_cast<int>(imageryStatusCode),
+                        url,
+                        imageryBytes);
+                }
 
                 promise.resolve(request);
                 });

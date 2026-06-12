@@ -31,6 +31,9 @@ public:
 
     static std::shared_ptr<spdlog::logger> getOrCreateTilesetLogger();
 
+    /// Trim and fix common config corruption (e.g. INI "%1247" -> "-1247" in UUID).
+    static std::string normalizeVWorldApiKey(std::string apiKey);
+
     static RasterOverlayPtr createVWorldStreet(const std::string& apiKey);
     static RasterOverlayPtr createVWorldSatellite(const std::string& apiKey);
     static RasterOverlayPtr createVWorldHybridOverlay(const std::string& apiKey);

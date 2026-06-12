@@ -932,6 +932,8 @@ void HyperTerrainBridge::addImageryOverlay(RasterOverlayPtr overlay, int composi
         _impl->primaryTileset->getOverlays().add(overlay);
     if (_impl->fallbackTileset)
         _impl->fallbackTileset->getOverlays().add(overlay);
+    _impl->registeredImageryOverlayCount =
+        static_cast<int>(_impl->activeOverlays.size());
 }
 
 void HyperTerrainBridge::removeImageryOverlay(RasterOverlayPtr overlay)
@@ -942,12 +944,12 @@ void HyperTerrainBridge::removeImageryOverlay(RasterOverlayPtr overlay)
         return;
     if (_impl->renderer)
         _impl->renderer->unregisterImageryOverlaySlot(overlay.get());
-    _impl->registeredImageryOverlayCount =
-        std::max(0, _impl->registeredImageryOverlayCount - 1);
     if (_impl->primaryTileset)
         _impl->primaryTileset->getOverlays().remove(overlay);
     if (_impl->fallbackTileset)
         _impl->fallbackTileset->getOverlays().remove(overlay);
+    _impl->registeredImageryOverlayCount =
+        static_cast<int>(_impl->activeOverlays.size());
 }
 
 void HyperTerrainBridge::setImageryOverlayAlpha(RasterOverlayPtr overlay, float alpha)
@@ -970,6 +972,28 @@ void HyperTerrainBridge::setTerrainBaseColor(const osg::Vec3f& rgb)
         _impl->renderer->setTerrainBaseColor(rgb);
     else
         setHyperTerrainBaseColor(rgb);
+}
+
+void HyperTerrainBridge::refreshLoadedTileRasterOverlays()
+{
+    auto refreshTileset = [](Cesium3DTilesSelection::Tileset* tileset) {
+        if (!tileset)
+            return;
+        const Cesium3DTilesSelection::TilesetOptions& opts = tileset->getOptions();
+        Cesium3DTilesSelection::RasterOverlayCollection& overlays = tileset->getOverlays();
+        tileset->forEachLoadedTile([&](const Cesium3DTilesSelection::Tile& tile) {
+            if (tile.getState() != Cesium3DTilesSelection::TileLoadState::Done)
+                return;
+            if (!tile.getContent().isRenderContent())
+                return;
+            Cesium3DTilesSelection::Tile& mutableTile =
+                const_cast<Cesium3DTilesSelection::Tile&>(tile);
+            overlays.updateTileOverlays(mutableTile, opts);
+        });
+    };
+
+    refreshTileset(_impl->primaryTileset.get());
+    refreshTileset(_impl->fallbackTileset.get());
 }
 
 bool HyperTerrainBridge::hasPrimaryTileset() const
