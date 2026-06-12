@@ -17,6 +17,7 @@
 #include <osg/ref_ptr>
 #include <osg/StateSet>
 #include <osg/Texture2D>
+#include <osg/Vec3f>
 
 #include <any>
 #include <cstdint>
@@ -117,6 +118,15 @@ public:
 
     void setTmsImageryExposure(float exposure);
 
+    void setTerrainBaseColor(const osg::Vec3f& rgb);
+
+    /// Stable u_overlayTex slot per registered overlay (registration order).
+    void registerImageryOverlaySlot(
+        const CesiumRasterOverlays::RasterOverlay* overlay,
+        int slot);
+    void unregisterImageryOverlaySlot(
+        const CesiumRasterOverlays::RasterOverlay* overlay);
+
     /// Remove _tileGroup children with no alive render handle (orphan OSG nodes).
     size_t pruneSceneNodesWithoutHandles();
 
@@ -156,6 +166,8 @@ private:
     bool resolveHandle(const HyperTerrainTileRenderHandle* handle, HyperTerrainTileRenderData& outData) const;
     void releaseHandle(const HyperTerrainTileRenderHandle* handle);
     float rasterOverlayAlpha(const CesiumRasterOverlays::RasterOverlay* overlay) const;
+    int preferredImageryOverlaySlot(
+        const CesiumRasterOverlays::RasterOverlay* overlay) const;
     size_t clearInvalidOverlaySlotsOnStateSet(osg::StateSet* stateSet);
 
     struct RasterAttachment {
@@ -174,6 +186,7 @@ private:
 
     mutable std::mutex m_overlayMutex;
     std::unordered_map<const CesiumRasterOverlays::RasterOverlay*, float> m_overlayAlpha;
+    std::unordered_map<const CesiumRasterOverlays::RasterOverlay*, int> m_overlayPreferredSlots;
     std::vector<RasterAttachment> m_rasterAttachments;
     std::unordered_map<const osg::StateSet*, uint32_t> m_stuckOverlayFrameCounts;
 

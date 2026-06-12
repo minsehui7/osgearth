@@ -5,6 +5,7 @@
 #include "Export"
 #include <osg/Program>
 #include <osg/StateSet>
+#include <osg/Vec3f>
 
 namespace osgEarth { namespace Cesium {
 
@@ -17,6 +18,9 @@ OSGEARTHCESIUM_EXPORT osg::ref_ptr<osg::Program> createHyperTerrainLitProgram(
     HyperTerrainLitColorMode colorMode = HyperTerrainLitColorMode::FixedTerrainBase);
 
 OSGEARTHCESIUM_EXPORT void initHyperTerrainLitStateSet(osg::StateSet* ss);
+
+OSGEARTHCESIUM_EXPORT void setHyperTerrainBaseColor(const osg::Vec3f& rgb);
+OSGEARTHCESIUM_EXPORT osg::Vec3f hyperTerrainBaseColor();
 
 }} // namespace osgEarth::Cesium
 

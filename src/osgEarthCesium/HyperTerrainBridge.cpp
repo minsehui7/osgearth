@@ -5,6 +5,7 @@
 #include "HyperTerrainBridge"
 #include "HyperTerrainPrepareRendererResources"
 #include "HyperTerrainImageryFactory"
+#include "HyperTerrainLitShader"
 #include "CesiumIon"
 #include "Context"
 #include "Settings"
@@ -31,6 +32,7 @@
 #include <glm/glm.hpp>
 
 #include <algorithm>
+#include <unordered_set>
 #include <cstdio>
 #include <cmath>
 #include <optional>
@@ -456,6 +458,9 @@ struct HyperTerrainBridge::Impl {
     int fallbackDrainPassesLastFrame = 0;
     /// App-registered TMS overlays (Mapbox/VWorld/Naver/OWM); when zero, show mesh without imagery gate.
     int registeredImageryOverlayCount = 0;
+    std::unordered_set<const CesiumRasterOverlays::RasterOverlay*> activeOverlays;
+    /// When false, show mesh as soon as selected (dual-terrain NodeMask compositing unchanged).
+    bool waitForTmsImageryBeforeDisplay = true;
     /// While true, user 3D Tiles layers defer cull/update and drape work for terrain priority.
     bool deferUserTilesets = true;
     int terrainStableFrames = 0;
@@ -504,6 +509,7 @@ bool HyperTerrainBridge::initialize(const HyperTerrainInitOptions& options)
     _impl->primaryTileset.reset();
     _impl->fallbackTileset.reset();
     _impl->cesiumIonTerrainAlwaysOnLevelMax = options.cesiumIonTerrainAlwaysOnLevelMax;
+    _impl->waitForTmsImageryBeforeDisplay = options.waitForTmsImageryBeforeDisplay;
 
     const bool dualTerrain = !options.terrainEndpoint.empty()
         && !options.ionAccessToken.empty()
@@ -670,7 +676,8 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
     }
 
     const HyperTerrainPrepareRendererResources* renderer = _impl->renderer.get();
-    const bool requireImageryForDisplay = _impl->registeredImageryOverlayCount > 0;
+    const bool requireImageryForDisplay =
+        _impl->waitForTmsImageryBeforeDisplay && _impl->registeredImageryOverlayCount > 0;
 
     TileSelectionStats primaryStats = countTerrainTileSelection(
         primaryResult.tilesToRenderThisFrame, renderer, requireImageryForDisplay);
@@ -909,7 +916,12 @@ void HyperTerrainBridge::addImageryOverlay(RasterOverlayPtr overlay)
 {
     if (!overlay)
         return;
+    if (!_impl->activeOverlays.insert(overlay.get()).second)
+        return;
+    const int slot = _impl->registeredImageryOverlayCount;
     ++_impl->registeredImageryOverlayCount;
+    if (_impl->renderer)
+        _impl->renderer->registerImageryOverlaySlot(overlay.get(), slot);
     if (_impl->primaryTileset)
         _impl->primaryTileset->getOverlays().add(overlay);
     if (_impl->fallbackTileset)
@@ -920,6 +932,10 @@ void HyperTerrainBridge::removeImageryOverlay(RasterOverlayPtr overlay)
 {
     if (!overlay)
         return;
+    if (!_impl->activeOverlays.erase(overlay.get()))
+        return;
+    if (_impl->renderer)
+        _impl->renderer->unregisterImageryOverlaySlot(overlay.get());
     _impl->registeredImageryOverlayCount =
         std::max(0, _impl->registeredImageryOverlayCount - 1);
     if (_impl->primaryTileset)
@@ -940,6 +956,14 @@ void HyperTerrainBridge::setTmsImageryExposure(float exposure)
     HyperTerrainImageryFactory::setTmsImageryExposure(exposure);
     if (_impl->renderer)
         _impl->renderer->setTmsImageryExposure(exposure);
+}
+
+void HyperTerrainBridge::setTerrainBaseColor(const osg::Vec3f& rgb)
+{
+    if (_impl->renderer)
+        _impl->renderer->setTerrainBaseColor(rgb);
+    else
+        setHyperTerrainBaseColor(rgb);
 }
 
 bool HyperTerrainBridge::hasPrimaryTileset() const

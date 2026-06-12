@@ -59,6 +59,8 @@ struct OSGEARTHCESIUM_EXPORT HyperTerrainInitOptions {
     double maximumScreenSpaceError{16.0};
     /** Dual terrain: levels 0..N use Ion fallback only; primary skips load/render. -1 = off. */
     int32_t cesiumIonTerrainAlwaysOnLevelMax{-1};
+    /** When true (default), keep tiles NodeMask-off until TMS raster overlays are display-ready. */
+    bool waitForTmsImageryBeforeDisplay{true};
 };
 
 } // namespace Cesium

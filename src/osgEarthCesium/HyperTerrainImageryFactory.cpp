@@ -4,6 +4,12 @@
 // UrlTemplateRasterOverlayOptions::minimumLevel / maximumLevel 은 osgEarth TMS와
 // 같이 QuadtreeRasterOverlayTileProvider 에서 적용된다. minimum 미만·ideal 이
 // maximum+2 초과면 해당 타일만 투명, 그 안에서는 sticky 로 maximum 근처 LOD 를 맞춘다.
+//
+// VWorld는 전역 EPSG:3857 z/x/y 타일(한국 z=6~19)이다. coverageRectangle 만 주면
+// cesium-native 가 한국 bbox 로 지역 쿼드트리를 만들어 URL 이 0/0/0 에 고정되므로
+// 반드시 전역 WebMercator tilingScheme 을 명시한다.
+// coverageRectangle 은 한국 밖 타일에 경계 픽셀을 늘려 붙이는(stretch) 글리치를 유발하므로
+// 사용하지 않는다 — 한국 밖은 타일 HTTP 실패로 투명 처리.
 
 #include "HyperTerrainImageryFactory"
 #include "Settings"
@@ -12,6 +18,10 @@
 #include <CesiumRasterOverlays/TileMapServiceRasterOverlay.h>
 #include <CesiumRasterOverlays/IonRasterOverlay.h>
 #include <CesiumGeometry/Rectangle.h>
+#include <CesiumGeometry/QuadtreeTilingScheme.h>
+#include <CesiumGeospatial/GlobeRectangle.h>
+#include <CesiumGeospatial/Projection.h>
+#include <CesiumGeospatial/WebMercatorProjection.h>
 // RasterOverlayOptions is defined inside RasterOverlay.h
 #include <CesiumRasterOverlays/RasterOverlay.h>
 
@@ -29,6 +39,45 @@ namespace {
 
 static std::mutex s_loggerMutex;
 static std::shared_ptr<spdlog::logger> s_tilesetLogger;
+
+constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+constexpr uint32_t kVWorldMinimumLevel = 6;
+constexpr uint32_t kVWorldMaximumLevel = 19;
+
+CesiumGeospatial::GlobeRectangle vworldKoreaGlobeRectangle()
+{
+    return CesiumGeospatial::GlobeRectangle(
+        124.6 * kDegToRad,
+        33.1 * kDegToRad,
+        131.9 * kDegToRad,
+        38.5 * kDegToRad);
+}
+
+CesiumGeometry::Rectangle vworldKoreaProjectedCoverageRectangle()
+{
+    const CesiumGeospatial::WebMercatorProjection projection;
+    return CesiumGeospatial::projectRectangleSimple(
+        projection,
+        vworldKoreaGlobeRectangle());
+}
+
+CesiumGeometry::QuadtreeTilingScheme vworldGlobalWebMercatorTilingScheme()
+{
+    const CesiumGeospatial::WebMercatorProjection projection;
+    const CesiumGeometry::Rectangle globeProjected =
+        CesiumGeospatial::projectRectangleSimple(
+            projection,
+            CesiumGeospatial::WebMercatorProjection::MAXIMUM_GLOBE_RECTANGLE);
+    return CesiumGeometry::QuadtreeTilingScheme(globeProjected, 1, 1);
+}
+
+void applyVworldRegionalOverlayOptions(
+    CesiumRasterOverlays::UrlTemplateRasterOverlayOptions& opts)
+{
+    opts.minimumLevel = kVWorldMinimumLevel;
+    opts.maximumLevel = kVWorldMaximumLevel;
+    opts.tilingScheme = vworldGlobalWebMercatorTilingScheme();
+}
 
 bool containsIgnoreCase(std::string_view haystack, std::string_view needle)
 {
@@ -196,7 +245,7 @@ HyperTerrainImageryFactory::createVWorldStreet(const std::string& apiKey)
         "/Base/{z}/{reverseY}/{x}.png";
 
     UrlTemplateRasterOverlayOptions opts;
-    opts.maximumLevel = 19;
+    applyVworldRegionalOverlayOptions(opts);
 
     return new UrlTemplateRasterOverlay("VWorldStreet", url, {}, opts, currentRasterOverlayOpts());
 }
@@ -209,7 +258,7 @@ HyperTerrainImageryFactory::createVWorldSatellite(const std::string& apiKey)
         "/Satellite/{z}/{reverseY}/{x}.jpeg";
 
     UrlTemplateRasterOverlayOptions opts;
-    opts.maximumLevel = 19;
+    applyVworldRegionalOverlayOptions(opts);
 
     return new UrlTemplateRasterOverlay("VWorldSatellite", url, {}, opts, currentRasterOverlayOpts());
 }
@@ -222,7 +271,7 @@ HyperTerrainImageryFactory::createVWorldHybridOverlay(const std::string& apiKey)
         "/Hybrid/{z}/{reverseY}/{x}.png";
 
     UrlTemplateRasterOverlayOptions opts;
-    opts.maximumLevel = 19;
+    applyVworldRegionalOverlayOptions(opts);
 
     return new UrlTemplateRasterOverlay("VWorldHybrid", url, {}, opts, currentRasterOverlayOpts());
 }
@@ -230,21 +279,13 @@ HyperTerrainImageryFactory::createVWorldHybridOverlay(const std::string& apiKey)
 IntrusivePointer<RasterOverlay>
 HyperTerrainImageryFactory::createVWorldLabel()
 {
-    // QGIS TMS for Korea / VWorld open 2D — Hybrid(라벨·도로명) 오버레이 타일.
+    // xdworld open 2D Hybrid (라벨·도로명). Slippy-map Y = cesium-native {reverseY}.
     // https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{y}.png
     const std::string url =
         "https://xdworld.vworld.kr/2d/Hybrid/service/{z}/{x}/{reverseY}.png";
 
     UrlTemplateRasterOverlayOptions opts;
-    opts.minimumLevel = 7;
-    opts.maximumLevel = 18;
-    // Service is Korea-only; avoid pointless HTTP outside this bounds.
-    constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
-    opts.coverageRectangle = CesiumGeometry::Rectangle(
-        124.6 * kDegToRad,
-        33.1 * kDegToRad,
-        131.9 * kDegToRad,
-        38.5 * kDegToRad);
+    applyVworldRegionalOverlayOptions(opts);
 
     return new UrlTemplateRasterOverlay("VWorldLabel", url, {}, opts, currentRasterOverlayOpts());
 }
@@ -257,7 +298,7 @@ HyperTerrainImageryFactory::createVWorldGray(const std::string& apiKey)
         "/gray/{z}/{reverseY}/{x}.png";
 
     UrlTemplateRasterOverlayOptions opts;
-    opts.maximumLevel = 18;
+    applyVworldRegionalOverlayOptions(opts);
 
     return new UrlTemplateRasterOverlay("VWorldGray", url, {}, opts, currentRasterOverlayOpts());
 }
@@ -270,7 +311,7 @@ HyperTerrainImageryFactory::createVWorldMidnight(const std::string& apiKey)
         "/midnight/{z}/{reverseY}/{x}.png";
 
     UrlTemplateRasterOverlayOptions opts;
-    opts.maximumLevel = 18;
+    applyVworldRegionalOverlayOptions(opts);
 
     return new UrlTemplateRasterOverlay("VWorldMidnight", url, {}, opts, currentRasterOverlayOpts());
 }

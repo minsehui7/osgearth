@@ -385,6 +385,54 @@ void HyperTerrainPrepareRendererResources::setTmsImageryExposure(float exposure)
     }
 }
 
+void HyperTerrainPrepareRendererResources::setTerrainBaseColor(const osg::Vec3f& rgb)
+{
+    setHyperTerrainBaseColor(rgb);
+
+    std::lock_guard<std::mutex> lock(m_storeMutex);
+    for (TileRenderRecord& record : m_store) {
+        if (!record.alive || !record.data.geom.valid())
+            continue;
+        osg::StateSet* const ss = record.data.geom->getStateSet();
+        if (!ss)
+            continue;
+        if (osg::Uniform* u = ss->getUniform("u_terrainBaseColor"))
+            u->set(rgb);
+        else
+            ss->getOrCreateUniform("u_terrainBaseColor", osg::Uniform::FLOAT_VEC3)->set(rgb);
+    }
+}
+
+void HyperTerrainPrepareRendererResources::registerImageryOverlaySlot(
+    const CesiumRasterOverlays::RasterOverlay* overlay,
+    int slot)
+{
+    if (!overlay)
+        return;
+    slot = std::max(0, std::min(slot, kMaxOverlays - 1));
+    std::lock_guard<std::mutex> lock(m_overlayMutex);
+    m_overlayPreferredSlots[overlay] = slot;
+}
+
+void HyperTerrainPrepareRendererResources::unregisterImageryOverlaySlot(
+    const CesiumRasterOverlays::RasterOverlay* overlay)
+{
+    if (!overlay)
+        return;
+    std::lock_guard<std::mutex> lock(m_overlayMutex);
+    m_overlayPreferredSlots.erase(overlay);
+}
+
+int HyperTerrainPrepareRendererResources::preferredImageryOverlaySlot(
+    const CesiumRasterOverlays::RasterOverlay* overlay) const
+{
+    if (!overlay)
+        return -1;
+    std::lock_guard<std::mutex> lock(m_overlayMutex);
+    const auto it = m_overlayPreferredSlots.find(overlay);
+    return it != m_overlayPreferredSlots.end() ? it->second : -1;
+}
+
 CesiumAsync::Future<Cesium3DTilesSelection::TileLoadResultAndRenderResources>
 HyperTerrainPrepareRendererResources::prepareInLoadThread(
     const CesiumAsync::AsyncSystem& asyncSystem,
@@ -665,24 +713,27 @@ void HyperTerrainPrepareRendererResources::attachRasterInMainThread(
     auto* tex = static_cast<osg::Texture2D*>(pMainThreadRendererResources);
     osg::StateSet* ss = tileData.geom->getOrCreateStateSet();
 
-    // 동일 textureCoordinateID(대개 0)를 쓰는 베이스 TMS/위성 + OWM 구름 등이 겹치면
-    // 같은 OSG 유닛에 연달아 바인딩되어 먼저 붙은 타일이 사라진다. 빈 유닛으로 분산한다.
-    int slot = cesiumTcId;
-    auto* existing = dynamic_cast<osg::Texture2D*>(
-        ss->getTextureAttribute(cesiumTcId, osg::StateAttribute::TEXTURE));
-    if (existing != nullptr && existing != tex) {
-        slot = -1;
-        for (int j = 0; j < kMaxOverlays; ++j) {
-            auto* ej = dynamic_cast<osg::Texture2D*>(ss->getTextureAttribute(j, osg::StateAttribute::TEXTURE));
-            if (ej == nullptr) {
-                slot = j;
-                break;
+    const CesiumRasterOverlays::RasterOverlay* overlayPtr = &rasterTile.getOverlay();
+    int slot = preferredImageryOverlaySlot(overlayPtr);
+    if (slot < 0) {
+        // Legacy fallback: first free unit when overlay has no registration slot.
+        slot = cesiumTcId;
+        auto* existing = dynamic_cast<osg::Texture2D*>(
+            ss->getTextureAttribute(cesiumTcId, osg::StateAttribute::TEXTURE));
+        if (existing != nullptr && existing != tex) {
+            for (int j = 0; j < kMaxOverlays; ++j) {
+                auto* ej = dynamic_cast<osg::Texture2D*>(
+                    ss->getTextureAttribute(j, osg::StateAttribute::TEXTURE));
+                if (ej == nullptr) {
+                    slot = j;
+                    break;
+                }
             }
-        }
-        if (slot < 0) {
-            OSG_WARN << "[HyperTerrain] attachRasterInMainThread: all " << kMaxOverlays
-                     << " overlay texture units in use; cannot attach raster." << std::endl;
-            return;
+            if (slot < 0 || ss->getTextureAttribute(slot, osg::StateAttribute::TEXTURE) != nullptr) {
+                OSG_WARN << "[HyperTerrain] attachRasterInMainThread: all " << kMaxOverlays
+                         << " overlay texture units in use; cannot attach raster." << std::endl;
+                return;
+            }
         }
     }
 
@@ -694,6 +745,7 @@ void HyperTerrainPrepareRendererResources::attachRasterInMainThread(
         osg::Vec2f(static_cast<float>(scale.x), static_cast<float>(scale.y)));
     if (auto* u = ss->getUniform("u_overlayAlpha"))   u->setElement(slot,
         rasterOverlayAlpha(&rasterTile.getOverlay()));
+    if (auto* u = ss->getUniform("u_overlayTcIndex")) u->setElement(slot, cesiumTcId);
     if (auto* u = ss->getUniform("u_overlayActive"))  u->setElement(slot, 1);
 
     {

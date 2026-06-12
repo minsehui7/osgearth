@@ -10,6 +10,8 @@
 
 #include <osgEarth/Lighting>
 
+#include <atomic>
+#include <algorithm>
 #include <string>
 
 namespace osgEarth { namespace Cesium {
@@ -241,6 +243,7 @@ uniform vec2 u_overlayTrans[4];
 uniform vec2 u_overlayScale[4];
 uniform float u_overlayAlpha[4];
 uniform int  u_overlayActive[4];
+uniform int  u_overlayTcIndex[4];
 
 uniform float u_tmsImageryExposure;
 uniform float oe_sky_ambientBoostFactor;
@@ -296,10 +299,9 @@ in vec4 v_oeOverlayTexcoord;
 
 uniform sampler2D oe_overlay_tex;
 uniform float oe_overlay_ready;
+uniform vec3 u_terrainBaseColor;
 
 out vec4 fragColor;
-
-const vec3 kBaseColor = vec3(0.60, 0.50, 0.40);
 
 // Cesium ClippingPlaneCollection (intersection): keep where dot(n,p)+d <= 0 for all planes.
 bool hyperTerrainClipDiscard(vec3 worldPos) {
@@ -359,15 +361,27 @@ vec3 applyTmsImageryExposure(vec3 rgb) {
     return vec3(1.0) - exp(-u_tmsImageryExposure * 0.33 * rgb);
 }
 
+vec2 overlayMercatorUv(int tcIdx) {
+    if (tcIdx == 0) return v_tc[0];
+    if (tcIdx == 1) return v_tc[1];
+    if (tcIdx == 2) return v_tc[2];
+    return v_tc[3];
+}
+
+// 부모 타일 업스케일·coverage 경계 등으로 UV가 [0,1] 밖으로 나가면 인접 타일 경계 글리치.
+vec2 clampOverlayUv(vec2 uv) {
+    return clamp(uv, vec2(0.0), vec2(1.0));
+}
+
 void main() {
     if (hyperTerrainClipDiscard(v_worldPos))
         discard;
 
-    vec3 colorRgb = kBaseColor;
+    vec3 colorRgb = u_terrainBaseColor;
     // sampler2D 배열을 비상수 인덱스로 texture() 하면 일부 드라이버에서 비정상 샘플링된다.
     // 슬롯마다 상수 인덱스로 펼친다 (OWM 구름 등 RGBA 알파 유지).
     if (u_overlayActive[0] != 0) {
-        vec2 uv0 = v_tc[0] * u_overlayScale[0] + u_overlayTrans[0];
+        vec2 uv0 = clampOverlayUv(overlayMercatorUv(u_overlayTcIndex[0]) * u_overlayScale[0] + u_overlayTrans[0]);
         vec4 tc0 = texture(u_overlayTex[0], uv0);
         tc0.rgb = applyTmsImageryExposure(tc0.rgb);
         tc0.a *= u_overlayAlpha[0];
@@ -377,23 +391,20 @@ void main() {
     applyDrapeOverlay(colorRgb);
 
     if (u_overlayActive[1] != 0) {
-        vec2 uv1 = v_tc[1] * u_overlayScale[1] + u_overlayTrans[1];
+        vec2 uv1 = clampOverlayUv(overlayMercatorUv(u_overlayTcIndex[1]) * u_overlayScale[1] + u_overlayTrans[1]);
         vec4 tc1 = texture(u_overlayTex[1], uv1);
-        tc1.rgb = applyTmsImageryExposure(tc1.rgb);
         tc1.a *= u_overlayAlpha[1];
         colorRgb = mix(colorRgb, tc1.rgb, tc1.a);
     }
     if (u_overlayActive[2] != 0) {
-        vec2 uv2 = v_tc[2] * u_overlayScale[2] + u_overlayTrans[2];
+        vec2 uv2 = clampOverlayUv(overlayMercatorUv(u_overlayTcIndex[2]) * u_overlayScale[2] + u_overlayTrans[2]);
         vec4 tc2 = texture(u_overlayTex[2], uv2);
-        tc2.rgb = applyTmsImageryExposure(tc2.rgb);
         tc2.a *= u_overlayAlpha[2];
         colorRgb = mix(colorRgb, tc2.rgb, tc2.a);
     }
     if (u_overlayActive[3] != 0) {
-        vec2 uv3 = v_tc[3] * u_overlayScale[3] + u_overlayTrans[3];
+        vec2 uv3 = clampOverlayUv(overlayMercatorUv(u_overlayTcIndex[3]) * u_overlayScale[3] + u_overlayTrans[3]);
         vec4 tc3 = texture(u_overlayTex[3], uv3);
-        tc3.rgb = applyTmsImageryExposure(tc3.rgb);
         tc3.a *= u_overlayAlpha[3];
         colorRgb = mix(colorRgb, tc3.rgb, tc3.a);
     }
@@ -539,12 +550,13 @@ static std::string injectBeforeMain(const char* src, const char* snippet) {
 }
 
 static std::string patchFragBaseColor(const std::string& frag) {
-    const std::string oldLine("    vec3 colorRgb = kBaseColor;");
+    const std::string oldLine("    vec3 colorRgb = u_terrainBaseColor;");
     const size_t pos = frag.find(oldLine);
     if (pos == std::string::npos)
         return frag;
     std::string out = frag;
-    out.replace(pos, oldLine.size(), "    vec3 colorRgb = HYPER_TERRAIN_VERTEX_ALBEDO ? v_albedo : kBaseColor;");
+    out.replace(pos, oldLine.size(),
+        "    vec3 colorRgb = HYPER_TERRAIN_VERTEX_ALBEDO ? v_albedo : u_terrainBaseColor;");
     return out;
 }
 
@@ -591,6 +603,41 @@ osg::ref_ptr<osg::Program> createHyperTerrainLitProgram(HyperTerrainLitColorMode
     return slot;
 }
 
+namespace {
+
+constexpr float kDefaultTerrainBaseColorR = 0.60f;
+constexpr float kDefaultTerrainBaseColorG = 0.50f;
+constexpr float kDefaultTerrainBaseColorB = 0.40f;
+std::atomic<float> s_terrainBaseColorR{kDefaultTerrainBaseColorR};
+std::atomic<float> s_terrainBaseColorG{kDefaultTerrainBaseColorG};
+std::atomic<float> s_terrainBaseColorB{kDefaultTerrainBaseColorB};
+
+osg::Vec3f clampTerrainBaseColor(const osg::Vec3f& rgb)
+{
+    return osg::Vec3f(
+        std::clamp(rgb.x(), 0.0f, 1.0f),
+        std::clamp(rgb.y(), 0.0f, 1.0f),
+        std::clamp(rgb.z(), 0.0f, 1.0f));
+}
+
+} // namespace
+
+void setHyperTerrainBaseColor(const osg::Vec3f& rgb)
+{
+    const osg::Vec3f clamped = clampTerrainBaseColor(rgb);
+    s_terrainBaseColorR.store(clamped.x(), std::memory_order_relaxed);
+    s_terrainBaseColorG.store(clamped.y(), std::memory_order_relaxed);
+    s_terrainBaseColorB.store(clamped.z(), std::memory_order_relaxed);
+}
+
+osg::Vec3f hyperTerrainBaseColor()
+{
+    return osg::Vec3f(
+        s_terrainBaseColorR.load(std::memory_order_relaxed),
+        s_terrainBaseColorG.load(std::memory_order_relaxed),
+        s_terrainBaseColorB.load(std::memory_order_relaxed));
+}
+
 void initHyperTerrainLitStateSet(osg::StateSet* ss) {
     if (!ss)
         return;
@@ -599,18 +646,21 @@ void initHyperTerrainLitStateSet(osg::StateSet* ss) {
     auto* scaleU  = new osg::Uniform(osg::Uniform::FLOAT_VEC2, "u_overlayScale",  kHyperTerrainMaxOverlays);
     auto* alphaU  = new osg::Uniform(osg::Uniform::FLOAT,      "u_overlayAlpha",  kHyperTerrainMaxOverlays);
     auto* activeU = new osg::Uniform(osg::Uniform::INT,        "u_overlayActive", kHyperTerrainMaxOverlays);
+    auto* tcIdxU  = new osg::Uniform(osg::Uniform::INT,        "u_overlayTcIndex", kHyperTerrainMaxOverlays);
     for (int i = 0; i < kHyperTerrainMaxOverlays; ++i) {
         texU->setElement(i, i);
         transU->setElement(i, osg::Vec2f(0.0f, 0.0f));
         scaleU->setElement(i, osg::Vec2f(1.0f, 1.0f));
         alphaU->setElement(i, 1.0f);
         activeU->setElement(i, 0);
+        tcIdxU->setElement(i, i);
     }
     ss->addUniform(texU);
     ss->addUniform(transU);
     ss->addUniform(scaleU);
     ss->addUniform(alphaU);
     ss->addUniform(activeU);
+    ss->addUniform(tcIdxU);
     // Do not set oe_overlay_ready / oe_overlay_texmatrix here: per-tile defaults (ready=0)
     // override DrapingTechnique uniforms from OverlayDecorator::_sharedTerrainStateSet during
     // draw and disable applyDrapeOverlay() even when the drape RTT is valid.
@@ -620,6 +670,8 @@ void initHyperTerrainLitStateSet(osg::StateSet* ss) {
     osgEarth::Lighting::installDefaultMaterial(ss);
     ss->getOrCreateUniform("u_tmsImageryExposure", osg::Uniform::FLOAT)->set(
         HyperTerrainImageryFactory::tmsImageryExposure());
+    ss->getOrCreateUniform("u_terrainBaseColor", osg::Uniform::FLOAT_VEC3)->set(
+        hyperTerrainBaseColor());
     ss->getOrCreateUniform("oe_sky_ambientBoostFactor", osg::Uniform::FLOAT)->set(1.0f);
 }
 

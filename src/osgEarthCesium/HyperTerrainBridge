@@ -9,6 +9,7 @@
 #include "HyperTerrainTypes"
 
 #include <osg/Group>
+#include <osg/Vec3f>
 
 #include <memory>
 
@@ -37,6 +38,7 @@ public:
     void removeImageryOverlay(RasterOverlayPtr overlay);
     void setImageryOverlayAlpha(RasterOverlayPtr overlay, float alpha);
     void setTmsImageryExposure(float exposure);
+    void setTerrainBaseColor(const osg::Vec3f& rgb);
 
     bool hasPrimaryTileset() const;
 
