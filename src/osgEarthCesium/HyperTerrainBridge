@@ -34,7 +34,8 @@ public:
 
     void updateFrame(const HyperTerrainViewParams& viewParams, bool tilesetReady);
 
-    void addImageryOverlay(RasterOverlayPtr overlay);
+    /// compositingSlot: shader u_overlayTex index (0..3). -1 = legacy registration order.
+    void addImageryOverlay(RasterOverlayPtr overlay, int compositingSlot = -1);
     void removeImageryOverlay(RasterOverlayPtr overlay);
     void setImageryOverlayAlpha(RasterOverlayPtr overlay, float alpha);
     void setTmsImageryExposure(float exposure);

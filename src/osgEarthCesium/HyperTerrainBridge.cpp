@@ -912,16 +912,22 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
     }
 }
 
-void HyperTerrainBridge::addImageryOverlay(RasterOverlayPtr overlay)
+void HyperTerrainBridge::addImageryOverlay(RasterOverlayPtr overlay, int compositingSlot)
 {
     if (!overlay)
         return;
-    if (!_impl->activeOverlays.insert(overlay.get()).second)
-        return;
-    const int slot = _impl->registeredImageryOverlayCount;
-    ++_impl->registeredImageryOverlayCount;
+    const bool newlyActive = _impl->activeOverlays.insert(overlay.get()).second;
+    int slot = compositingSlot;
+    if (slot < 0) {
+        slot = _impl->registeredImageryOverlayCount;
+        ++_impl->registeredImageryOverlayCount;
+    } else {
+        slot = std::max(0, std::min(slot, 3));
+    }
     if (_impl->renderer)
         _impl->renderer->registerImageryOverlaySlot(overlay.get(), slot);
+    if (!newlyActive)
+        return;
     if (_impl->primaryTileset)
         _impl->primaryTileset->getOverlays().add(overlay);
     if (_impl->fallbackTileset)

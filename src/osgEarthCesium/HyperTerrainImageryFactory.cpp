@@ -25,6 +25,8 @@
 // RasterOverlayOptions is defined inside RasterOverlay.h
 #include <CesiumRasterOverlays/RasterOverlay.h>
 
+#include <osgEarth/URI>
+
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
@@ -189,6 +191,50 @@ CesiumRasterOverlays::RasterOverlayOptions currentRasterOverlayOpts()
     return opts;
 }
 
+constexpr const char* kNaverSatelliteStyleJsonUrl =
+    "https://map.pstatic.net/nrb/styles/satellite.json?fmt=png&mt=bg";
+constexpr const char* kNaverSatelliteFallbackVersion = "1781263792";
+
+std::string fetchNaverSatelliteTileVersion()
+{
+    osgEarth::URIContext uriContext;
+    uriContext.addHeader("Referer", "https://map.naver.com/");
+    uriContext.addHeader(
+        "User-Agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+
+    const osgEarth::URI uri(kNaverSatelliteStyleJsonUrl, uriContext);
+    const osgEarth::ReadResult result = uri.readString();
+    if (result.code() != osgEarth::ReadResult::RESULT_OK) {
+        spdlog::warn(
+            "Naver satellite style JSON fetch failed (code={}); using fallback version {}",
+            static_cast<int>(result.code()),
+            kNaverSatelliteFallbackVersion);
+        return kNaverSatelliteFallbackVersion;
+    }
+
+    const std::string& body = result.getString();
+    static constexpr std::string_view kVersionKey = "\"version\":\"";
+    const std::size_t pos = body.find(kVersionKey);
+    if (pos == std::string::npos) {
+        spdlog::warn(
+            "Naver satellite style JSON missing version; using fallback {}",
+            kNaverSatelliteFallbackVersion);
+        return kNaverSatelliteFallbackVersion;
+    }
+
+    const std::size_t start = pos + kVersionKey.size();
+    const std::size_t end = body.find('"', start);
+    if (end == std::string::npos || end <= start) {
+        spdlog::warn(
+            "Naver satellite style JSON version parse failed; using fallback {}",
+            kNaverSatelliteFallbackVersion);
+        return kNaverSatelliteFallbackVersion;
+    }
+
+    return body.substr(start, end - start);
+}
+
 } // namespace
 
 static std::atomic<float> s_tmsImageryExposure{
@@ -350,13 +396,16 @@ HyperTerrainImageryFactory::createMapboxSatellite(const std::string& accessToken
 IntrusivePointer<RasterOverlay>
 HyperTerrainImageryFactory::createNaverSatellite()
 {
-    // Naver 위성 슬라이드 타일
-    // TODO: 실제 URL 및 인증 방식 확인 필요
-    std::string url =
-        "https://simg.pstatic.net/onetile/bl3/694/{z}/{reverseY}/{x}";
+    // Naver Maps NRB satellite (Web Mercator XYZ). Version in the path changes periodically;
+    // fetch satellite.json at layer creation time (same source as map.naver.com).
+    const std::string version = fetchNaverSatelliteTileVersion();
+    const std::string url =
+        "https://map.pstatic.net/nrb/styles/satellite/" + version
+        + "/{z}/{x}/{reverseY}.png?mt=bg";
 
     UrlTemplateRasterOverlayOptions opts;
-    opts.maximumLevel = 14;
+    opts.minimumLevel = 0;
+    opts.maximumLevel = 21;
 
     return new UrlTemplateRasterOverlay("NaverSatellite", url, {}, opts, currentRasterOverlayOpts());
 }
