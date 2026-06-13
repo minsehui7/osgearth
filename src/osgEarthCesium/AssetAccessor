@@ -9,12 +9,39 @@
 #include <CesiumAsync/IAssetResponse.h>
 #include <osgDB/Options>
 #include <osgEarth/Cache>
+#include <cstdint>
 #include <span>
+#include <string>
 
 namespace osgEarth {
     namespace Cesium
     {
         using namespace osgEarth;
+
+        struct HyperTerrainAssetRequestStats
+        {
+            uint64_t terrainStarted = 0;
+            uint64_t terrainCompleted = 0;
+            uint64_t terrainOk = 0;
+            uint64_t terrainNotFound = 0;
+            uint64_t terrainError = 0;
+            uint64_t terrainCancelled = 0;
+            uint64_t terrainBytes = 0;
+            uint64_t imageryStarted = 0;
+            uint64_t imageryCompleted = 0;
+            uint64_t imageryOk = 0;
+            uint64_t imageryNotFound = 0;
+            uint64_t imageryError = 0;
+            uint64_t imageryCancelled = 0;
+            uint64_t imageryBytes = 0;
+            uint16_t lastTerrainStatus = 0;
+            uint16_t lastImageryStatus = 0;
+            uint64_t lastTerrainBytes = 0;
+            uint64_t lastImageryBytes = 0;
+        };
+
+        HyperTerrainAssetRequestStats hyperTerrainAssetRequestStats();
+        std::string elapsedLogStamp();
 
         class AssetResponse : public CesiumAsync::IAssetResponse
         {

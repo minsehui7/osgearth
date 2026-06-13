@@ -3,6 +3,7 @@
  * MIT License
  */
 #include "HyperTerrainBridge"
+#include "AssetAccessor"
 #include "HyperTerrainPrepareRendererResources"
 #include "HyperTerrainImageryFactory"
 #include "HyperTerrainLitShader"
@@ -32,9 +33,12 @@
 #include <glm/glm.hpp>
 
 #include <algorithm>
-#include <unordered_set>
-#include <cstdio>
+#include <array>
 #include <cmath>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <unordered_set>
@@ -55,6 +59,11 @@ constexpr uint32_t kStuckOverlayFrameThreshold = 1;
 constexpr int kDrainMaxPassesMeshPending = 12;
 constexpr int kDrainMaxPassesImageryPending = 3;
 constexpr int kDrainStalePassLimit = 2;
+constexpr int kImplicitRootStuckSseRelaxFrames = 6;
+constexpr double kImplicitRootStuckSseRelaxScale = 0.5;
+constexpr const char* kHyperTerrainPerfLogPath = "logs/hyperterrain-perf.log";
+constexpr double kRadiansToDegrees = 57.295779513082320876;
+constexpr size_t kTileLoadStateBucketCount = 8;
 
 using Cesium3DTilesSelection::Tile;
 using Cesium3DTilesSelection::TileID;
@@ -189,22 +198,32 @@ void destroyTilesetQuietly(std::unique_ptr<Cesium3DTilesSelection::Tileset>& til
     tileset.reset();
 }
 
+struct ViewportDimensions {
+    double width = 1280.0;
+    double height = 720.0;
+};
+
+ViewportDimensions resolveViewStateViewport(const HyperTerrainViewParams& p)
+{
+    if (p.haveViewPixelDims && p.viewPixelWidth >= 1.0 && p.viewPixelHeight >= 1.0) {
+        return {p.viewPixelWidth, p.viewPixelHeight};
+    }
+    if (p.viewportWidth >= 1.0 && p.viewportHeight >= 1.0) {
+        return {p.viewportWidth, p.viewportHeight};
+    }
+    return {};
+}
+
 Cesium3DTilesSelection::ViewState buildViewState(const HyperTerrainViewParams& p)
 {
     const glm::dvec3 position(p.eyeX, p.eyeY, p.eyeZ);
     const glm::dvec3 direction(p.dirX, p.dirY, p.dirZ);
     const glm::dvec3 up(p.upX, p.upY, p.upZ);
-    double vw = p.viewportWidth;
-    double vh = p.viewportHeight;
-    if ((vw < 1.0 || vh < 1.0) && p.haveViewPixelDims
-        && p.viewPixelWidth > 0.0 && p.viewPixelHeight > 0.0) {
-        vw = p.viewPixelWidth;
-        vh = p.viewPixelHeight;
-    }
-    const glm::dvec2 viewportSize(vw, vh);
+    const ViewportDimensions viewport = resolveViewStateViewport(p);
+    const glm::dvec2 viewportSize(viewport.width, viewport.height);
     const double vFov = p.vFovRad;
     const double hFov =
-        (p.hFovRad > 0.0) ? p.hFovRad : (vFov * (vw / vh));
+        (p.hFovRad > 0.0) ? p.hFovRad : (vFov * (viewport.width / viewport.height));
 
     return Cesium3DTilesSelection::ViewState(
         position, direction, up, viewportSize, hFov, vFov);
@@ -215,6 +234,8 @@ struct TileSelectionStats {
     size_t renderContentCount = 0;
     size_t renderReadyCount = 0;
     size_t pendingImageryCount = 0;
+    std::array<size_t, kTileLoadStateBucketCount> tileLoadStateBuckets{};
+    size_t tileLoadStateOtherCount = 0;
 };
 
 TileSelectionStats countTerrainTileSelection(
@@ -224,11 +245,20 @@ TileSelectionStats countTerrainTileSelection(
 {
     TileSelectionStats stats;
     stats.selectedCount = tiles.size();
-    if (!renderer) {
-        return stats;
-    }
     for (const auto& tilePtr : tiles) {
-        if (!tilePtr || !tilePtr->getContent().isRenderContent()) {
+        if (!tilePtr) {
+            continue;
+        }
+        const int state = static_cast<int>(tilePtr->getState());
+        if (state >= 0 && static_cast<size_t>(state) < stats.tileLoadStateBuckets.size()) {
+            ++stats.tileLoadStateBuckets[static_cast<size_t>(state)];
+        } else {
+            ++stats.tileLoadStateOtherCount;
+        }
+        if (!renderer) {
+            continue;
+        }
+        if (!tilePtr->getContent().isRenderContent()) {
             continue;
         }
         ++stats.renderContentCount;
@@ -247,6 +277,19 @@ TileSelectionStats countTerrainTileSelection(
         ++stats.renderReadyCount;
     }
     return stats;
+}
+
+std::string tileLoadStateBucketsToString(const TileSelectionStats& stats)
+{
+    std::ostringstream oss;
+    for (size_t i = 0; i < stats.tileLoadStateBuckets.size(); ++i) {
+        if (i > 0) {
+            oss << ',';
+        }
+        oss << i << ':' << stats.tileLoadStateBuckets[i];
+    }
+    oss << ",other:" << stats.tileLoadStateOtherCount;
+    return oss.str();
 }
 
 void applyMainThreadRebuildBudget(
@@ -283,7 +326,8 @@ void maybeRelaxImplicitRootStuckSse(
     const std::vector<Tile::ConstPointer>& tilesToRender,
     size_t renderContentCount,
     double configuredMaximumScreenSpaceError,
-    int& stuckImplicitRootFrames)
+    int& stuckImplicitRootFrames,
+    const char* tilesetLabel)
 {
     if (!tileset) {
         return;
@@ -298,20 +342,38 @@ void maybeRelaxImplicitRootStuckSse(
     }
 
     Cesium3DTilesSelection::TilesetOptions& opts = tileset->getOptions();
+    const char* const label = tilesetLabel ? tilesetLabel : "tileset";
 
     if (!stuckOnBlankRoot) {
         stuckImplicitRootFrames = 0;
-        // 비상 완화(SSE 반감)가 세션 내내 남으면 이후 모든 뷰에서 선택 LOD가 수 단계 깊어져
-        // 줌 아웃 시 로드 큐가 사실상 무한이 된다(장시간 세션 후 신규 타일 블랙 현상).
-        // 루트 stuck이 풀리는 즉시 설정값으로 복원해 비상 경로를 일시적으로만 유지한다.
+        // Keep emergency SSE relaxation temporary; leaving it active makes later
+        // views over-select deep LOD and can starve new tile loads.
         if (opts.maximumScreenSpaceError != configuredMaximumScreenSpaceError) {
+            if (getLogHyperTerrainDiag()) {
+                OSG_NOTICE << "[HyperTerrain] restored " << label
+                           << " maxSse=" << configuredMaximumScreenSpaceError
+                           << " from " << opts.maximumScreenSpaceError
+                           << std::endl;
+            }
             opts.maximumScreenSpaceError = configuredMaximumScreenSpaceError;
         }
         return;
     }
 
-    if (++stuckImplicitRootFrames >= 6) {
-        opts.maximumScreenSpaceError = std::max(1.0, opts.maximumScreenSpaceError * 0.5);
+    if (++stuckImplicitRootFrames >= kImplicitRootStuckSseRelaxFrames) {
+        const double relaxedMaxSse = std::min(
+            configuredMaximumScreenSpaceError,
+            std::max(1.0, configuredMaximumScreenSpaceError * kImplicitRootStuckSseRelaxScale));
+        if (opts.maximumScreenSpaceError != relaxedMaxSse) {
+            if (getLogHyperTerrainDiag()) {
+                OSG_WARN << "[HyperTerrain] relaxing " << label
+                         << " maxSse=" << opts.maximumScreenSpaceError
+                         << " -> " << relaxedMaxSse
+                         << " after implicit root stuck"
+                         << std::endl;
+            }
+            opts.maximumScreenSpaceError = relaxedMaxSse;
+        }
         stuckImplicitRootFrames = 0;
     }
 }
@@ -427,12 +489,29 @@ size_t sceneChildTargetMax(const size_t selectedCount)
     return selectedCount + kPruneChildMargin + kLruExtraKeepMargin;
 }
 
+void appendHyperTerrainPerfDiagFile(const std::string& line)
+{
+    static std::mutex s_fileMutex;
+    std::lock_guard<std::mutex> lock(s_fileMutex);
+
+    std::error_code ec;
+    std::filesystem::create_directories("logs", ec);
+
+    std::ofstream out(kHyperTerrainPerfLogPath, std::ios::out | std::ios::app);
+    if (!out) {
+        return;
+    }
+    out << line << '\n';
+}
+
 void emitHyperTerrainPerfDiag(const std::string& line)
 {
+    const std::string stampedLine = elapsedLogStamp() + " " + line;
     // stderr: visible in VS Output / console regardless of Qt Log dock or osg notify level.
-    std::fputs(line.c_str(), stderr);
+    std::fputs(stampedLine.c_str(), stderr);
     std::fputc('\n', stderr);
     std::fflush(stderr);
+    appendHyperTerrainPerfDiagFile(stampedLine);
 }
 
 } // namespace
@@ -686,7 +765,8 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
         primaryResult.tilesToRenderThisFrame,
         primaryStats.renderContentCount,
         _impl->configuredMaximumScreenSpaceError,
-        _impl->primaryStuckImplicitRootFrames);
+        _impl->primaryStuckImplicitRootFrames,
+        "primary");
     drainMainThreadUntilDrawable(
         _impl->primaryTileset.get(),
         primaryResult.tilesToRenderThisFrame,
@@ -705,7 +785,8 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
             fallbackResult->tilesToRenderThisFrame,
             fallbackStats.renderContentCount,
             _impl->configuredMaximumScreenSpaceError,
-            _impl->fallbackStuckImplicitRootFrames);
+            _impl->fallbackStuckImplicitRootFrames,
+            "fallback");
         drainMainThreadUntilDrawable(
             _impl->fallbackTileset.get(),
             fallbackResult->tilesToRenderThisFrame,
@@ -719,7 +800,7 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
     const size_t renderContentCount =
         primaryStats.renderContentCount + fallbackStats.renderContentCount;
     const size_t renderReadyCount = primaryStats.renderReadyCount + fallbackStats.renderReadyCount;
-    const bool activelyLoading = renderContentCount == 0 && selectedCount > 0;
+    const bool activelyLoading = selectedCount > renderReadyCount;
 
     size_t prunedOrphans = 0;
     size_t detachedStale = 0;
@@ -880,12 +961,17 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
         const uint32_t mainThreadBudget = _impl->primaryTileset
             ? _impl->primaryTileset->getOptions().maximumMainThreadTilesPerLoadPass
             : 0u;
+        const uint32_t fallbackMainThreadBudget = _impl->fallbackTileset
+            ? _impl->fallbackTileset->getOptions().maximumMainThreadTilesPerLoadPass
+            : 0u;
         const double primaryMaxSse = _impl->primaryTileset
             ? _impl->primaryTileset->getOptions().maximumScreenSpaceError
             : 0.0;
         const double fallbackMaxSse = _impl->fallbackTileset
             ? _impl->fallbackTileset->getOptions().maximumScreenSpaceError
             : 0.0;
+        const ViewportDimensions viewStateViewport = resolveViewStateViewport(viewParams);
+        const HyperTerrainAssetRequestStats requestStats = hyperTerrainAssetRequestStats();
         std::ostringstream oss;
         oss << "[HyperTerrain] perf sceneChildren=" << sceneChildren
             << " targetMax=" << sceneChildTargetMax(selectedCount)
@@ -899,9 +985,61 @@ void HyperTerrainBridge::updateFrame(const HyperTerrainViewParams& viewParams, b
             << " visible=" << _impl->lastVisibleXforms.size()
             << " drainPasses="
             << (_impl->primaryDrainPassesLastFrame + _impl->fallbackDrainPassesLastFrame)
+            << " primarySel=" << primaryStats.selectedCount
+            << " primaryContent=" << primaryStats.renderContentCount
+            << " primaryPendingImagery=" << primaryStats.pendingImageryCount
+            << " primaryReady=" << primaryStats.renderReadyCount
+            << " primaryTileStates=" << tileLoadStateBucketsToString(primaryStats)
+            << " fallbackSel=" << fallbackStats.selectedCount
+            << " fallbackContent=" << fallbackStats.renderContentCount
+            << " fallbackPendingImagery=" << fallbackStats.pendingImageryCount
+            << " fallbackReady=" << fallbackStats.renderReadyCount
+            << " fallbackTileStates=" << tileLoadStateBucketsToString(fallbackStats)
+            << " terrainReq=" << requestStats.terrainStarted
+            << "/" << requestStats.terrainCompleted
+            << "/" << requestStats.terrainOk
+            << "/" << requestStats.terrainNotFound
+            << "/" << requestStats.terrainError
+            << "/" << requestStats.terrainCancelled
+            << " terrainReqActive="
+            << (requestStats.terrainStarted >= requestStats.terrainCompleted
+                    ? requestStats.terrainStarted - requestStats.terrainCompleted
+                    : 0)
+            << " terrainReqBytes=" << requestStats.terrainBytes
+            << " terrainReqLast=" << requestStats.lastTerrainStatus
+            << "/" << requestStats.lastTerrainBytes
+            << " imageryReq=" << requestStats.imageryStarted
+            << "/" << requestStats.imageryCompleted
+            << "/" << requestStats.imageryOk
+            << "/" << requestStats.imageryNotFound
+            << "/" << requestStats.imageryError
+            << "/" << requestStats.imageryCancelled
+            << " imageryReqActive="
+            << (requestStats.imageryStarted >= requestStats.imageryCompleted
+                    ? requestStats.imageryStarted - requestStats.imageryCompleted
+                    : 0)
+            << " imageryReqBytes=" << requestStats.imageryBytes
+            << " imageryReqLast=" << requestStats.lastImageryStatus
+            << "/" << requestStats.lastImageryBytes
             << " terrainRebuildRate=" << terrainRebuildsPerFrameRate()
-            << " mainThreadBudget=" << mainThreadBudget
+            << " mainThreadBudget=" << mainThreadBudget << "/" << fallbackMainThreadBudget
+            << " budgetCredit=" << _impl->primaryRebuildBudgetCredit
+            << "/" << _impl->fallbackRebuildBudgetCredit
             << " maxSse=" << primaryMaxSse << "/" << fallbackMaxSse
+            << " configuredMaxSse=" << _impl->configuredMaximumScreenSpaceError
+            << " stuckRootFrames=" << _impl->primaryStuckImplicitRootFrames
+            << "/" << _impl->fallbackStuckImplicitRootFrames
+            << " cullViewport=" << viewParams.viewportWidth << "x" << viewParams.viewportHeight
+            << " appViewport="
+            << (viewParams.haveViewPixelDims ? viewParams.viewPixelWidth : 0.0)
+            << "x"
+            << (viewParams.haveViewPixelDims ? viewParams.viewPixelHeight : 0.0)
+            << " viewStateViewport=" << viewStateViewport.width << "x" << viewStateViewport.height
+            << " fovDeg=" << (viewParams.hFovRad * kRadiansToDegrees)
+            << "/" << (viewParams.vFovRad * kRadiansToDegrees)
+            << " waitForTmsImagery=" << (_impl->waitForTmsImageryBeforeDisplay ? 1 : 0)
+            << " requireImagery=" << (requireImageryForDisplay ? 1 : 0)
+            << " activeOverlays=" << _impl->registeredImageryOverlayCount
             << " deferUserTilesets=" << (_impl->deferUserTilesets ? 1 : 0)
             << " activelyLoading=" << (activelyLoading ? 1 : 0)
             << " prunedOrphans=" << prunedOrphans
