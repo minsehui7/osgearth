@@ -191,10 +191,11 @@ void main() {
     vec4 worldPos4 = osg_ViewMatrixInverse * vertexVIEW;
     v_worldPos = worldPos4.xyz / max(worldPos4.w, 1e-6);
 
-    // 거리 헤이즈 인자: ECEF world-space 좌표 기준으로 hl_fog_center 까지의 거리.
-    // hl_fog_end <= 0 이면 비활성 (ViewOsgEarth.cpp::installDistanceFog 초기값).
+    // 거리 헤이즈 인자: ECEF 카메라–정점 거리.
+    // hl_fog_end <= 0 이면 비활성 (TerrainRenderer::installDistanceFog 초기값).
     if (hl_fog_end > 0.0) {
-        float dist = length(v_worldPos - hl_fog_center);
+        vec3 eye = osg_ViewMatrixInverse[3].xyz;
+        float dist = length(v_worldPos - eye);
         float range = max(hl_fog_end - hl_fog_start, 1.0);
         v_hazeFactor = clamp((dist - hl_fog_start) / range, 0.0, 1.0);
     } else {
