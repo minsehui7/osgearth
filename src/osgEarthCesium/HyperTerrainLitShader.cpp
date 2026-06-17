@@ -394,18 +394,21 @@ void main() {
     if (u_overlayActive[1] != 0) {
         vec2 uv1 = clampOverlayUv(overlayMercatorUv(u_overlayTcIndex[1]) * u_overlayScale[1] + u_overlayTrans[1]);
         vec4 tc1 = texture(u_overlayTex[1], uv1);
+        tc1.rgb = applyTmsImageryExposure(tc1.rgb);
         tc1.a *= u_overlayAlpha[1];
         colorRgb = mix(colorRgb, tc1.rgb, tc1.a);
     }
     if (u_overlayActive[2] != 0) {
         vec2 uv2 = clampOverlayUv(overlayMercatorUv(u_overlayTcIndex[2]) * u_overlayScale[2] + u_overlayTrans[2]);
         vec4 tc2 = texture(u_overlayTex[2], uv2);
+        tc2.rgb = applyTmsImageryExposure(tc2.rgb);
         tc2.a *= u_overlayAlpha[2];
         colorRgb = mix(colorRgb, tc2.rgb, tc2.a);
     }
     if (u_overlayActive[3] != 0) {
         vec2 uv3 = clampOverlayUv(overlayMercatorUv(u_overlayTcIndex[3]) * u_overlayScale[3] + u_overlayTrans[3]);
         vec4 tc3 = texture(u_overlayTex[3], uv3);
+        tc3.rgb = applyTmsImageryExposure(tc3.rgb);
         tc3.a *= u_overlayAlpha[3];
         colorRgb = mix(colorRgb, tc3.rgb, tc3.a);
     }
