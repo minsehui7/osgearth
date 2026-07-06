@@ -2701,6 +2701,13 @@ EarthManipulator::zoom( double dx, double dy, osg::View* in_view )
             // Factor by which to scale the distance:
             double scale = 1.0f + dy;
             double newDistance = _distance*scale;
+            const double clampedDistance = osg::clampBetween(
+                newDistance, _settings->getMinDistance(), _settings->getMaxDistance());
+
+            // At zoom limit, skip focal motion to avoid sideways slide (osgEarth #2262).
+            if (osg::equivalent(_distance, clampedDistance, 1e-9))
+                return;
+
             double delta = _distance - newDistance;
             double ratio = delta/_distance;
 
@@ -2738,6 +2745,12 @@ EarthManipulator::zoom( double dx, double dy, osg::View* in_view )
 
             double scale = 1.0f + dy;
             double newDistance = _distance*scale;
+            const double clampedDistance = osg::clampBetween(
+                newDistance, _settings->getMinDistance(), _settings->getMaxDistance());
+
+            if (osg::equivalent(_distance, clampedDistance, 1e-9))
+                return;
+
             double delta = _distance - newDistance;
             double ratio = delta/_distance;
 
@@ -2752,6 +2765,11 @@ EarthManipulator::zoom( double dx, double dy, osg::View* in_view )
         // if the user's mouse isn't over the earth, just zoom in to the center of the screen
         recalculateCenterFromLookVector();
         double scale = 1.0f + dy;
+        double newDistance = _distance * scale;
+        const double clampedDistance = osg::clampBetween(
+            newDistance, _settings->getMinDistance(), _settings->getMaxDistance());
+        if (osg::equivalent(_distance, clampedDistance, 1e-9))
+            return;
         setDistance(_distance * scale);
         collisionDetect();
     }
