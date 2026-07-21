@@ -202,6 +202,9 @@ void HyperTerrainPrepareRendererResources::releaseHandle(const HyperTerrainTileR
 bool HyperTerrainPrepareRendererResources::tryResolveTileRenderData(
     const Cesium3DTilesSelection::Tile& tile,
     HyperTerrainTileRenderData& outData) const {
+    if (tile.getState() != Cesium3DTilesSelection::TileLoadState::Done) {
+        return false;
+    }
     const auto* rc = tile.getContent().getRenderContent();
     if (!rc) return false;
     return resolveRenderResources(rc->getRenderResources(), outData);

@@ -4,7 +4,6 @@
 */
 #include "AssetAccessor"
 #include "Settings"
-#include "UserTilesetLoadGate"
 
 #include <CesiumAsync/AsyncSystem.h>
 #include <osgEarth/LocalTerrainFileStore>
@@ -570,15 +569,6 @@ AssetAccessor::get(const CesiumAsync::AsyncSystem& asyncSystem,
         return asyncSystem.createResolvedFuture<std::shared_ptr<CesiumAsync::IAssetRequest>>(request);
     }
 
-    if (isHyperTerrainLoadingActive() && shouldDeferUserTilesetNetworkRequest(url))
-    {
-        auto request = std::make_shared<AssetRequest>("GET", url, headers);
-        auto response = std::make_unique<AssetResponse>();
-        response->_statusCode = 499;
-        request->setResponse(std::move(response));
-        return asyncSystem.createResolvedFuture<std::shared_ptr<CesiumAsync::IAssetRequest>>(request);
-    }
-
     osg::ref_ptr<osgDB::Options> options = _options.get();
     auto request = std::make_shared<AssetRequest>("GET", url, headers);
     recordRequestStarted(requestKind);
@@ -740,15 +730,6 @@ AssetAccessor::request(
     const std::vector<CesiumAsync::IAssetAccessor::THeader>& headers,
     const std::span<const std::byte>& contentPayload)
 {
-    if (isHyperTerrainLoadingActive() && shouldDeferUserTilesetNetworkRequest(url))
-    {
-        auto request = std::make_shared<AssetRequest>(verb, url, headers);
-        auto response = std::make_unique<AssetResponse>();
-        response->_statusCode = 499;
-        request->setResponse(std::move(response));
-        return asyncSystem.createResolvedFuture<std::shared_ptr<CesiumAsync::IAssetRequest>>(request);
-    }
-
     auto request = std::make_shared<AssetRequest>(verb, url, headers);
     return asyncSystem.createFuture<std::shared_ptr<CesiumAsync::IAssetRequest>>(
         [&](const auto& promise)
